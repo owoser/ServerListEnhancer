@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -85,6 +86,9 @@ Rect  gPanel{};
 bool  gPanelValid{};
 
 std::vector<RowHit> gRows;
+Rect                gAddHit{};
+Rect                gRefreshHit{};
+Rect                gCloseHit{};
 Rect                gAddBtn{};
 Rect                gRefreshBtn{};
 Rect                gCloseBtn{};
@@ -109,6 +113,8 @@ bool                    gFormEditing{false};
 
 std::string gConfirmText;
 int         gConfirmId{-1};
+
+std::atomic<int>  gLastVk{-1};
 
 std::string       gToast;
 Clock::time_point gToastAt{};
@@ -161,6 +167,10 @@ void fillRect(MinecraftUIRenderContext& ctx, Rect const& r, mce::Color const& co
     ctx.fillRectangle(area, color, alpha);
 }
 
+// ctx.drawText 只是把绘制命令排队，真正提交在 flushText；文本缓冲必须活到那时，
+// 否则临时 std::string 析构后渲染出乱码（本项目踩过：dyn 文本全部变 Ö/æñT）。
+thread_local std::deque<std::string> gTextKeep;
+
 void drawText(
     MinecraftUIRenderContext& ctx,
     Font&                     font,
@@ -170,6 +180,8 @@ void drawText(
     float                     fontSize,
     ui::TextAlignment         alignment = ui::TextAlignment::Left
 ) {
+    gTextKeep.emplace_back(text);
+    std::string_view stable{gTextKeep.back()};
     RectangleArea area{};
     area._x0 = r.x0;
     area._x1 = r.x1;
@@ -178,7 +190,7 @@ void drawText(
 
     TextMeasureData  textData{fontSize, 0.0f, true, false, false, alignment};
     CaretMeasureData caretData{0, false};
-    ctx.drawText(font, area, text, color, 1.0f, alignment, textData, caretData);
+    ctx.drawText(font, area, stable, color, 1.0f, alignment, textData, caretData);
 }
 
 mce::Color color8(int r, int g, int b, float alpha = 1.0f) {
@@ -247,6 +259,10 @@ void openForm(std::optional<SavedServer> const& existing) {
 // 渲染
 // ------------------------------------------------------------------
 namespace {
+
+Rect inflate(Rect r, float pad) {
+    return Rect{r.x0 - pad, r.y0 - pad, r.x1 + pad, r.y1 + pad};
+}
 
 void drawMenuButton(MinecraftUIRenderContext& ctx, Font& font, float sw, float sh, float mx, float my, bool mouseSeen) {
     Rect button{};
@@ -462,11 +478,19 @@ void drawListPage(
         );
 
         // 底部按钮
-        float by = panel.y1 - 46.0f;
+        float by = panel.y1 - 58.0f;
         gRefreshBtn = Rect{panel.x0 + 16.0f, by, panel.x0 + 128.0f, by + kButtonH};
         gAddBtn     = Rect{panel.x0 + 136.0f, by, panel.x0 + 248.0f, by + kButtonH};
-        gCloseBtn   = Rect{panel.x1 - 144.0f, by, panel.x1 - 16.0f, by + kButtonH};
+        gCloseBtn   = Rect{panel.x1 - 152.0f, by, panel.x1 - 24.0f, by + kButtonH};
 
+        {
+            float bandTop    = panel.y1 - 120.0f;
+            float bandBottom = panel.y1 - 2.0f;
+            float third      = (panel.x1 - panel.x0 - 24.0f) / 3.0f;
+            gRefreshHit      = Rect{panel.x0 + 8.0f, bandTop, panel.x0 + 8.0f + third, bandBottom};
+            gAddHit          = Rect{panel.x0 + 12.0f + third, bandTop, panel.x0 + 12.0f + third * 2.0f, bandBottom};
+            gCloseHit        = Rect{panel.x1 - 8.0f - third, bandTop, panel.x1 - 8.0f, bandBottom};
+        }
         drawVanillaButton(ctx, font, gRefreshBtn, std::string_view{"刷新状态"}, mouseSeen && gRefreshBtn.contains(mx, my));
         drawVanillaButton(ctx, font, gAddBtn, std::string_view{"添加服务器"}, mouseSeen && gAddBtn.contains(mx, my));
         drawVanillaButton(ctx, font, gCloseBtn, std::string_view{"关闭"}, mouseSeen && gCloseBtn.contains(mx, my));
@@ -512,8 +536,8 @@ void drawFormPage(
             font,
             Rect{row.x0 + 10.0f, row.y0 + 8.0f, row.x0 + 120.0f, row.y1},
             std::string_view{f.label},
-            color8(180, 180, 190),
-            0.9f
+            color8(205, 205, 215),
+            0.95f
         );
         std::string value = f.value ? *f.value : std::string{};
         if (value.empty()) {
@@ -528,6 +552,20 @@ void drawFormPage(
             1.0f
         );
         y += fieldH + 8.0f;
+    }
+
+    {
+        std::string dbg = "fields=" + std::to_string(gFields.size()) + " active=" + std::to_string(gFormActive)
+                        + " addr=" + std::to_string(gDraft.address.size()) + " name=" + std::to_string(gDraft.name.size())
+                        + " vk=" + std::to_string(gLastVk.load());
+        drawText(
+            ctx,
+            font,
+            Rect{panel.x0 + 16.0f, panel.y1 - 76.0f, panel.x1 - 16.0f, panel.y1 - 60.0f},
+            std::string_view{dbg},
+            color8(150, 200, 255),
+            0.85f
+        );
     }
 
     float by = panel.y1 - 44.0f;
@@ -598,6 +636,9 @@ bool keyEdge(int vk) {
     bool now = (GetAsyncKeyState(vk) & 0x8000) != 0;
     bool was = gKeyPrev[static_cast<std::size_t>(vk)];
     gKeyPrev[static_cast<std::size_t>(vk)] = now;
+    if (now && !was) {
+        gLastVk.store(vk);
+    }
     return now && !was;
 }
 
@@ -670,6 +711,10 @@ void pollKeyboard() {
         page = gPage;
     }
     if (!open) {
+        static std::atomic<int> sNoOpen{0};
+        if (sNoOpen.fetch_add(1) < 3) {
+            probeLogger().info("[UI] pollKeyboard: 面板未打开");
+        }
         return;
     }
     if (page == Page::List || page == Page::Confirm) {
@@ -736,6 +781,14 @@ void pollKeyboard() {
         if (keyEdge(vk)) {
             *value += static_cast<char>(vk);
         }
+    }
+    for (int vk = VK_NUMPAD0; vk <= VK_NUMPAD9; ++vk) {
+        if (keyEdge(vk)) {
+            *value += static_cast<char>('0' + (vk - VK_NUMPAD0));
+        }
+    }
+    if (keyEdge(VK_DECIMAL)) {
+        *value += '.';
     }
     for (int vk = 0x41; vk <= 0x5A; ++vk) {
         if (keyEdge(vk)) {
@@ -827,6 +880,8 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
         return;
     }
 
+    gTextKeep.clear();
+
     float mx{}, my{};
     bool  mouseSeen{};
     bool  open{};
@@ -910,6 +965,7 @@ void startAddForm() {
     gFormEditing = false;
     rebuildFields();
     gPage = Page::Form;
+    probeLogger().info("[UI] form opened (add)");
 }
 
 SavedServer draftToServer() {
@@ -920,7 +976,49 @@ SavedServer draftToServer() {
     return srv;
 }
 
+// 从窗口取真实光标位置（cancel 事件后 MouseInputEvent 的坐标会冻结在旧值）
+bool queryCursorClient(int& outX, int& outY) {
+    HWND hwnd = GetForegroundWindow();
+    if (!hwnd) {
+        return false;
+    }
+    wchar_t title[128]{};
+    GetWindowTextW(hwnd, title, 128);
+    if (std::wstring_view(title).find(L"Minecraft") == std::wstring_view::npos) {
+        return false;
+    }
+    POINT pt{};
+    if (!GetCursorPos(&pt) || !ScreenToClient(hwnd, &pt)) {
+        return false;
+    }
+    outX = pt.x;
+    outY = pt.y;
+    return true;
+}
+
 void onMouse(ll::event::input::MouseInputEvent& event) {
+    int  cursorX = 0;
+    int  cursorY = 0;
+    bool haveCursor = queryCursorClient(cursorX, cursorY);
+
+    static std::atomic<int> sMouseLogs{0};
+    int  rawAction = static_cast<int>(event.actionButtonId());
+    int  rawButton = static_cast<int>(event.buttonData());
+    if (rawAction != 0 || sMouseLogs.load() < 5) {
+        if (sMouseLogs.load() < 40) {
+            sMouseLogs.fetch_add(1);
+            probeLogger().info(
+                "[UI] mouse raw=({}, {}) cursor=({}, {}) btn={} action={} visible={}",
+                event.x(),
+                event.y(),
+                haveCursor ? cursorX : -1,
+                haveCursor ? cursorY : -1,
+                rawButton,
+                rawAction,
+                gVisible.load()
+            );
+        }
+    }
     if (!gVisible.load()) {
         return;
     }
@@ -932,8 +1030,9 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     if (!(guiScale > 0.01f)) {
         guiScale = 1.0f;
     }
-    float uiX = static_cast<float>(event.x()) / guiScale;
-    float uiY = static_cast<float>(event.y()) / guiScale;
+
+    float uiX = static_cast<float>(haveCursor ? cursorX : event.x()) / guiScale;
+    float uiY = static_cast<float>(haveCursor ? cursorY : event.y()) / guiScale;
 
     bool openNow{};
     {
@@ -974,6 +1073,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     bool  buttonValid{};
     std::vector<RowHit> rows;
     Rect  addBtn{}, refreshBtn{}, closeBtn{}, prevBtn{}, nextBtn{}, saveBtn{}, cancelBtn{}, yesBtn{}, noBtn{};
+    Rect  addHit{}, refreshHit{}, closeHit{};
     std::vector<FormField> fields;
     std::string            formId;
     int                    formActive{};
@@ -987,6 +1087,9 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         addBtn      = gAddBtn;
         refreshBtn  = gRefreshBtn;
         closeBtn    = gCloseBtn;
+        addHit      = gAddHit;
+        refreshHit  = gRefreshHit;
+        closeHit    = gCloseHit;
         prevBtn     = gPrevBtn;
         nextBtn     = gNextBtn;
         saveBtn     = gSaveBtn;
@@ -998,6 +1101,8 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         formActive  = gFormActive;
     }
 
+    probeLogger().info("[UI] click ui=({}, {}) page={} open={}", uiX, uiY, static_cast<int>(page), open ? 1 : 0);
+
     if (!open) {
         if (buttonValid && button.contains(uiX, uiY)) {
             std::lock_guard lock(gMutex);
@@ -1008,16 +1113,18 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     }
 
     if (page == Page::List) {
-        if (closeBtn.contains(uiX, uiY)) {
+        if (closeHit.contains(uiX, uiY) || inflate(closeBtn, 6.0f).contains(uiX, uiY)) {
+            probeLogger().info("[UI] hit close");
             std::lock_guard lock(gMutex);
             gOpen = false;
             return;
         }
-        if (addBtn.contains(uiX, uiY)) {
+        if (addHit.contains(uiX, uiY) || inflate(addBtn, 6.0f).contains(uiX, uiY)) {
+            probeLogger().info("[UI] hit add");
             startAddForm();
             return;
         }
-        if (refreshBtn.contains(uiX, uiY)) {
+        if (refreshHit.contains(uiX, uiY) || inflate(refreshBtn, 6.0f).contains(uiX, uiY)) {
             auto entries = ServerStore::getInstance().list();
             for (auto const& e : entries) {
                 ServerStatus::getInstance().request(statusKey(e), e.address, e.port);
@@ -1130,6 +1237,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
 } // namespace
 
 void registerProbeOverlay() {
+    probeLogger().info("[UI] probe overlay 已注册 (build 2026-11-16T16:35)");
     auto& bus = ll::event::EventBus::getInstance();
     if (!gRenderListener) {
         gRenderListener = bus.emplaceListener<ll::event::render::AfterUIRenderEvent>(
