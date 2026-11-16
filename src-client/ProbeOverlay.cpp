@@ -183,7 +183,11 @@ void drawText(
 }
 
 mce::Color color8(int r, int g, int b, float alpha = 1.0f) {
-    return mce::Color(r / 255.0f, g / 255.0f, b / 255.0f, alpha);
+    // 管线会把 linear 值编码成 sRGB 输出，所以这里先做 sRGB -> linear 反算
+    auto toLinear = [](float c) {
+        return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    };
+    return mce::Color(toLinear(r / 255.0f), toLinear(g / 255.0f), toLinear(b / 255.0f), alpha);
 }
 
 void drawVanillaButton(
@@ -750,11 +754,17 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     float uiX = static_cast<float>(event.x()) / guiScale;
     float uiY = static_cast<float>(event.y()) / guiScale;
 
+    bool openNow{};
     {
         std::lock_guard lock(gMutex);
         gMouseX    = uiX;
         gMouseY    = uiY;
         gMouseSeen = true;
+        openNow    = gOpen;
+    }
+    // 面板打开时拦截所有鼠标事件：否则点击会穿透到被遮住的原版按钮（游戏/设置）
+    if (openNow) {
+        event.cancel();
     }
 
     int  buttonId = static_cast<int>(event.buttonData());
