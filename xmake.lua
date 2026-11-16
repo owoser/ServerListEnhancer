@@ -73,5 +73,7 @@ target("ServerListEnhancer")
     else
         add_defines("LL_PLAT_C", "SLE_CLIENT")
         add_files("src-client/*.cpp")
+        remove_files("src-client/OreUIBridge.cpp", "src-client/ServerListPage.cpp")
         add_includedirs("src/common", "src-client")
+        add_syslinks("windowscodecs", "ole32", "bcrypt", "crypt32")
     end

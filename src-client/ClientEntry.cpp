@@ -5,6 +5,9 @@
 #include "ClientEntry.h"
 
 #include "ProbeOverlay.h"
+#include "ImageProvider.h"
+#include "ServerStatus.h"
+#include "common/Endpoint.h"
 #include "ServerStore.h"
 #include "SessionTracker.h"
 #include "VisualCache.h"
@@ -59,11 +62,19 @@ bool ClientEntry::load() {
         logger.warn("服务器列表读取失败或结构不兼容，按空列表启动: {}", serverPath.string());
     }
 
+    ImageProvider::getInstance().initialize(getSelf().getConfigDir().parent_path() / "cache" / "images");
+    ServerStatus::getInstance().setCachePath(getSelf().getConfigDir().parent_path() / "cache" / "discovery.json");
+    logger.info("内置图片就绪，客户端无需 DearOreUI 前置");
     logger.info("ServerListEnhancer (client) 已加载");
     return true;
 }
 
 bool ClientEntry::enable() {
+    ImageProvider::getInstance().start();
+    // Legacy NetherNet status metadata only; image downloads always validate TLS.
+    ServerStatus::getInstance().start({.allowSelfSignedNetherNet=true, .allowPlainHttpFallback=true});
+    for (auto const& s : ServerStore::getInstance().list())
+        ServerStatus::getInstance().request(endpointKey(s.address,s.port),s.address,s.port);
     if (!mJoinListener) {
         mJoinListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::client::ClientStartJoinLevelEvent>(
             [](ll::event::client::ClientStartJoinLevelEvent& event) {
@@ -85,6 +96,9 @@ bool ClientEntry::enable() {
         );
     }
 
+    // Use a single native JSON-UI rendering path. The experimental HTML
+    // injection is intentionally not started (it targeted an invisible view).
+
     // P1 探针：验证 AfterUIRenderEvent 叠加可见性与鼠标坐标命中
     registerProbeOverlay();
 
@@ -102,6 +116,8 @@ bool ClientEntry::disable() {
         mExitListener.reset();
     }
     unregisterProbeOverlay();
+    ServerStatus::getInstance().stop();
+    ImageProvider::getInstance().stop();
     VisualCache::getInstance().save();
     return true;
 }

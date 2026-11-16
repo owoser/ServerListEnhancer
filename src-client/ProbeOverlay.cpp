@@ -1,9 +1,19 @@
 #include "ProbeOverlay.h"
 
+#include "NativeMenuState.h"
+#include "VanillaButton.h"
+#include "mc/client/gui/Font.h"
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
 #include "ClientEntry.h"
 #include "ServerStatus.h"
+#include "ImageProvider.h"
+#include "NativeImage.h"
+#include "common/Endpoint.h"
 #include "ServerStore.h"
 #include "VisualCache.h"
 
@@ -46,15 +56,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-struct Rect {
-    float x0{};
-    float y0{};
-    float x1{};
-    float y1{};
-    bool  contains(float x, float y) const { return x >= x0 && x <= x1 && y >= y0 && y <= y1; }
-};
+using Rect = vanilla::Rect;
 
-constexpr float kButtonW = 144.0f;
 constexpr float kButtonH = 26.0f;
 
 enum class Page : int { List = 0, Form = 1, Confirm = 2 };
@@ -78,7 +81,7 @@ std::mutex gMutex;
 
 bool  gOpen{false};
 Page  gPage{Page::List};
-int   gSelected{-1};
+std::string gSelectedId;
 int   gScrollRow{0};
 bool  gButtonValid{};
 Rect  gButton{};
@@ -98,7 +101,6 @@ Rect                gSaveBtn{};
 Rect                gCancelBtn{};
 Rect                gYesBtn{};
 Rect                gNoBtn{};
-bool                gBtnsValid{};
 
 struct FormDraft {
     std::string address;
@@ -126,6 +128,7 @@ bool  gMouseSeen{};
 std::atomic<bool> gVisible{false};
 std::atomic<int>  gDrawCount{0};
 Clock::time_point gLastClick{};
+Clock::time_point gLastMenuFrame{};
 
 thread_local bool tTracing = false;
 
@@ -169,6 +172,9 @@ void fillRect(MinecraftUIRenderContext& ctx, Rect const& r, mce::Color const& co
 
 // ctx.drawText 只是把绘制命令排队，真正提交在 flushText；文本缓冲必须活到那时，
 // 否则临时 std::string 析构后渲染出乱码（本项目踩过：dyn 文本全部变 Ö/æñT）。
+// JSON UI logical units; GUI scaling is already performed by the game.
+float gU = 1.0f;
+
 thread_local std::deque<std::string> gTextKeep;
 
 void drawText(
@@ -188,7 +194,7 @@ void drawText(
     area._y0 = r.y0;
     area._y1 = r.y1;
 
-    TextMeasureData  textData{fontSize, 0.0f, true, false, false, alignment};
+    TextMeasureData  textData{fontSize, 0.0f, false, false, false, alignment};
     CaretMeasureData caretData{0, false};
     ctx.drawText(font, area, stable, color, 1.0f, alignment, textData, caretData);
 }
@@ -202,45 +208,50 @@ mce::Color color8(int r, int g, int b, float alpha = 1.0f) {
 }
 
 void drawVanillaButton(
-    MinecraftUIRenderContext& ctx,
-    Font&                     font,
-    Rect const&               r,
-    std::string_view          label,
-    bool                      hot,
-    float                     fontSize = 0.95f
+    MinecraftUIRenderContext& ctx, Font& font, Rect const& r,
+    std::string_view label, bool hot, float fontSize = 1.0f
 ) {
-    Rect frame{r.x0 - 1.0f, r.y0 - 1.0f, r.x1 + 1.0f, r.y1 + 1.0f};
-    fillRect(ctx, frame, color8(19, 19, 19), 1.0f);
-    fillRect(ctx, r, color8(hot ? 214 : 198, hot ? 214 : 198, hot ? 214 : 198), 1.0f);
-    fillRect(ctx, Rect{r.x0, r.y0, r.x1, r.y0 + 1.0f}, color8(247, 247, 247), 1.0f);
-    fillRect(ctx, Rect{r.x0, r.y1 - 1.0f, r.x1, r.y1}, color8(101, 101, 101), 1.0f);
-    fillRect(ctx, Rect{r.x0, r.y0, r.x0 + 1.0f, r.y0 + 1.0f}, color8(19, 19, 19), 1.0f);
-    fillRect(ctx, Rect{r.x1 - 1.0f, r.y0, r.x1, r.y0 + 1.0f}, color8(19, 19, 19), 1.0f);
-    fillRect(ctx, Rect{r.x0, r.y1 - 1.0f, r.x0 + 1.0f, r.y1}, color8(19, 19, 19), 1.0f);
-    fillRect(ctx, Rect{r.x1 - 1.0f, r.y1 - 1.0f, r.x1, r.y1}, color8(19, 19, 19), 1.0f);
-
-    Rect textRect{r.x0, r.y0 + 9.0f, r.x1, r.y1};
-    drawText(ctx, font, textRect, label, color8(26, 26, 26), fontSize, ui::TextAlignment::Center);
+    bool const pressed = hot && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    auto const state = !hot ? vanilla::ButtonState::Normal
+                           : pressed ? vanilla::ButtonState::Pressed : vanilla::ButtonState::Hover;
+    drawVanillaButtonSkin(ctx, r, state);
+    // Same default font, no shadow, natural line box centered in the button.
+    float const height = font.getWrapHeight() * fontSize;
+    float const y = std::floor((r.y0 + r.y1 - height) * 0.5f) + (pressed ? 1.0f : 0.0f);
+    Rect const textRect{r.x0 + 3.0f, y, r.x1 - 3.0f, y + height};
+    float const shade = hot ? 1.0f : 0.3f;
+    drawText(ctx, font, textRect, label, mce::Color{shade,shade,shade,1.0f}, fontSize, ui::TextAlignment::Center);
 }
 
-std::string statusKey(SavedServer const& s) { return s.address + ":" + std::to_string(s.port); }
+std::string statusKey(SavedServer const& s) { return endpointKey(s.address,s.port); }
+void refreshServers(bool force=false) {
+    for (auto const& e:ServerStore::getInstance().list())
+        ServerStatus::getInstance().request(statusKey(e),e.address,e.port,force);
+}
+DiscoveryVisual resolvedVisual(SavedServer const& e, std::optional<ServerStatusResult> const& status) {
+    DiscoveryVisual v;
+    if (status && status->visual) v=*status->visual;
+    if (!e.logoUrl.empty()) v.logo={"url",e.logoUrl};
+    else if (!e.logoId.empty()) v.logo={"builtin",e.logoId};
+    if (!e.introText.empty()) v.introText=e.introText;
+    if (!e.introImageUrl.empty()) v.introImage={"url",e.introImageUrl};
+    return v;
+}
+void renderImage(MinecraftUIRenderContext& ctx,Rect r,ImageReference const& ref,bool banner=false) {
+    auto& images=ImageProvider::getInstance();
+    images.request(ref,banner); // enqueue only; never download or decode on this thread
+    auto path=images.get(ref,banner);
+    if(path && drawNativeImage(ctx,r,*path,true)) return;
+    (void)drawNativeImage(ctx,r,images.builtinPath(banner),true);
+}
 
 // 行内小按钮（编辑 / 删除）
 bool drawSmallButton(
-    MinecraftUIRenderContext& ctx,
-    Font&                     font,
-    Rect const&               r,
-    std::string_view          label,
-    float                     mx,
-    float                     my,
-    bool                      mouseSeen
+    MinecraftUIRenderContext& ctx, Font& font, Rect const& r,
+    std::string_view label, float mx, float my, bool mouseSeen
 ) {
-    bool hot = mouseSeen && r.contains(mx, my);
-    fillRect(ctx, r, color8(hot ? 190 : 168, hot ? 190 : 168, hot ? 190 : 168), 1.0f);
-    fillRect(ctx, Rect{r.x0, r.y0, r.x1, r.y0 + 1.0f}, color8(216, 216, 216), 1.0f);
-    fillRect(ctx, Rect{r.x0, r.y1 - 1.0f, r.x1, r.y1}, color8(96, 96, 96), 1.0f);
-    Rect textRect{r.x0, r.y0 + 4.0f, r.x1, r.y1};
-    drawText(ctx, font, textRect, label, color8(30, 30, 30), 0.8f, ui::TextAlignment::Center);
+    bool const hot = mouseSeen && r.contains(mx, my);
+    drawVanillaButton(ctx, font, r, label, hot, 0.85f);
     return hot;
 }
 
@@ -250,7 +261,7 @@ void openForm(std::optional<SavedServer> const& existing) {
     gFormActive = 0;
     gFormEditing = true;
     gPage       = Page::Form;
-    gSelected   = -1;
+    gSelectedId.clear();
 }
 
 } // namespace
@@ -264,20 +275,13 @@ Rect inflate(Rect r, float pad) {
     return Rect{r.x0 - pad, r.y0 - pad, r.x1 + pad, r.y1 + pad};
 }
 
-void drawMenuButton(MinecraftUIRenderContext& ctx, Font& font, float sw, float sh, float mx, float my, bool mouseSeen) {
-    Rect button{};
-    button.x0 = sw * 0.5f - kButtonW * 0.5f;
-    button.y0 = sh * 0.4743f;
-    button.x1 = button.x0 + kButtonW;
-    button.y1 = button.y0 + kButtonH;
-
+void drawMenuButton(MinecraftUIRenderContext& ctx, Font& font, Rect const& button, float mx, float my, bool mouseSeen) {
     {
         std::lock_guard lock(gMutex);
-        gButton      = button;
+        gButton = button;
         gButtonValid = true;
     }
-    bool hot = mouseSeen && button.contains(mx, my);
-    drawVanillaButton(ctx, font, button, std::string_view{"服务器列表"}, hot);
+    drawVanillaButton(ctx, font, button, "服务器列表", mouseSeen && button.contains(mx, my));
 }
 
 void drawListPage(
@@ -289,31 +293,38 @@ void drawListPage(
     float                     my,
     bool                      mouseSeen
 ) {
-    Rect panel{sw * 0.18f, sh * 0.10f, sw * 0.82f, sh * 0.92f};
-    fillRect(ctx, panel, color8(28, 28, 32), 0.97f);
-    Rect border{panel.x0 - 1.0f, panel.y0 - 1.0f, panel.x1 + 1.0f, panel.y1 + 1.0f};
-    fillRect(ctx, border, color8(92, 92, 100), 1.0f);
+    bool const html = false; // Keep a single native rendering path.
 
-    Rect header{panel.x0, panel.y0, panel.x1, panel.y0 + 42.0f};
-    fillRect(ctx, header, color8(38, 38, 43), 1.0f);
-    fillRect(ctx, Rect{panel.x0, panel.y0 + 42.0f, panel.x1, panel.y0 + 43.0f}, color8(88, 88, 96), 0.9f);
-    drawText(
-        ctx,
-        font,
-        Rect{panel.x0 + 16.0f, panel.y0 + 10.0f, panel.x1 - 16.0f, panel.y0 + 38.0f},
-        std::string_view{"服务器列表"},
-        color8(255, 255, 255),
-        1.5f
-    );
+    float const u = gU;
+
+    Rect panel{sw * 0.18f, sh * 0.10f, sw * 0.82f, sh * 0.92f};
+    if (!html) {
+        fillRect(ctx, panel, color8(28, 28, 32), 0.97f);
+        Rect border{panel.x0 - u, panel.y0 - u, panel.x1 + u, panel.y1 + u};
+        fillRect(ctx, border, color8(92, 92, 100), 1.0f);
+
+        Rect header{panel.x0, panel.y0, panel.x1, panel.y0 + 42.0f * u};
+        fillRect(ctx, header, color8(38, 38, 43), 1.0f);
+        fillRect(ctx, Rect{panel.x0, panel.y0 + 42.0f * u, panel.x1, panel.y0 + 43.0f * u}, color8(88, 88, 96), 0.9f);
+        drawText(
+            ctx,
+            font,
+            Rect{panel.x0 + 16.0f * u, panel.y0 + 10.0f * u, panel.x1 - 16.0f * u, panel.y0 + 38.0f * u},
+            std::string_view{"服务器列表"},
+            color8(255, 255, 255),
+            1.5f
+        );
+    }
 
     // 数据
     auto entries = ServerStore::getInstance().list();
-    auto rowsTop    = panel.y0 + 52.0f;
-    auto rowsBottom = panel.y1 - 66.0f;
-    float rowH      = 64.0f;
-    float rowGap    = 6.0f;
-    float rowX0     = panel.x0 + 12.0f;
-    float rowX1     = panel.x1 - 12.0f;
+    auto rowsTop    = panel.y0 + 52.0f * u;
+    float const detailH=std::clamp(sh*0.23f,88.0f,130.0f);
+    auto rowsBottom = panel.y1 - 66.0f * u - detailH - 10.0f;
+    float rowH      = 64.0f * u;
+    float rowGap    = 6.0f * u;
+    float rowX0     = panel.x0 + 12.0f * u;
+    float rowX1     = panel.x1 - 12.0f * u;
 
     int visible = std::max(1, static_cast<int>((rowsBottom - rowsTop) / (rowH + rowGap)));
     int maxScroll = std::max(0, static_cast<int>(entries.size()) - visible);
@@ -321,6 +332,8 @@ void drawListPage(
     {
         std::lock_guard lock(gMutex);
         gScrollRow = std::clamp(gScrollRow, 0, maxScroll);
+        if (!entries.empty() && std::none_of(entries.begin(),entries.end(),[](auto const& e){return e.id==gSelectedId;}))
+            gSelectedId=entries.front().id;
         gRows.clear();
         gPanel      = panel;
         gPanelValid = true;
@@ -334,13 +347,22 @@ void drawListPage(
             float       y = rowsTop + static_cast<float>(i) * (rowH + rowGap);
             Rect        row{rowX0, y, rowX1, y + rowH};
             bool        hot     = mouseSeen && row.contains(mx, my);
-            bool        isSel   = (idx == gSelected);
+            bool        isSel   = (e.id == gSelectedId);
             RowHit      hit{};
             hit.row = row;
             hit.id  = e.id;
-            hit.edit = Rect{rowX1 - 108.0f, y + rowH - 24.0f, rowX1 - 60.0f, y + rowH - 4.0f};
-            hit.del  = Rect{rowX1 - 54.0f, y + rowH - 24.0f, rowX1 - 6.0f, y + rowH - 4.0f};
+            hit.edit = Rect{rowX1 - 108.0f * u, y + rowH - 24.0f * u, rowX1 - 60.0f * u, y + rowH - 4.0f * u};
+            hit.del  = Rect{rowX1 - 54.0f * u, y + rowH - 24.0f * u, rowX1 - 6.0f * u, y + rowH - 4.0f * u};
             gRows.push_back(hit);
+
+            if (html) {
+                if (hot || isSel) {
+                    fillRect(ctx, row, color8(255, 255, 255), 0.06f);
+                }
+                drawSmallButton(ctx, font, hit.edit, std::string_view{"编辑"}, mx, my, mouseSeen);
+                drawSmallButton(ctx, font, hit.del, std::string_view{"删除"}, mx, my, mouseSeen);
+                continue;
+            }
 
             fillRect(
                 ctx,
@@ -350,33 +372,13 @@ void drawListPage(
             );
             fillRect(ctx, Rect{row.x0, row.y0, row.x1, row.y0 + 1.0f}, color8(90, 90, 98), 0.8f);
 
-            // Logo 占位（图片管线下一阶段接入）
-            Rect logo{row.x0 + 10.0f, y + 8.0f, row.x0 + 58.0f, y + 56.0f};
-            int  hue = static_cast<int>(std::hash<std::string>{}(e.id) % 6);
-            static int const pal[6][3] = {
-                {78, 106, 140},
-                {110, 92, 140},
-                {92, 132, 104},
-                {140, 106, 84},
-                {96, 120, 140},
-                {130, 96, 112},
-            };
-            fillRect(ctx, logo, color8(pal[hue][0], pal[hue][1], pal[hue][2]), 1.0f);
-            std::string initial = e.name.empty() ? "?" : truncateUtf8(e.name, 1);
-            drawText(
-                ctx,
-                font,
-                Rect{logo.x0, logo.y0 + 14.0f, logo.x1, logo.y1},
-                std::string_view{initial},
-                color8(240, 240, 240),
-                2.0f,
-                ui::TextAlignment::Center
-            );
+            auto status = ServerStatus::getInstance().get(statusKey(e));
+            auto const visual=resolvedVisual(e,status);
+            Rect logo{row.x0+10,y+8,row.x0+58,y+56};
+            renderImage(ctx,logo,visual.logo);
 
-            // 名称 / 简介 / 地址
-            auto        status = ServerStatus::getInstance().get(statusKey(e));
             std::string name   = e.name;
-            if (name.empty() && status && status->ok) {
+            if (name.empty() && status && !status->name.empty()) {
                 name = status->name;
             }
             if (name.empty()) {
@@ -391,7 +393,7 @@ void drawListPage(
                 1.3f
             );
 
-            std::string intro = e.introText;
+            std::string intro = visual.introText;
             if (intro.empty() && status && status->ok) {
                 intro = status->level;
             }
@@ -400,7 +402,7 @@ void drawListPage(
                     ctx,
                     font,
                     Rect{row.x0 + 68.0f, y + 26.0f, row.x1 - 120.0f, y + 40.0f},
-                    std::string_view{truncateUtf8(intro, 90)},
+                    std::string_view{truncateUtf8(intro.substr(0,intro.find_first_of("\r\n")), 90)},
                     color8(176, 176, 184),
                     0.9f
                 );
@@ -418,7 +420,9 @@ void drawListPage(
             // 在线人数
             std::string players = "--";
             if (status) {
-                if (status->ok) {
+                if (status->state==ServerStatusState::Queued) players="排队中";
+                else if (status->state==ServerStatusState::Loading) players="查询中";
+                else if (status->ok) {
                     players = std::to_string(status->players) + "/" + std::to_string(status->maxPlayers);
                 } else {
                     players = "离线";
@@ -439,7 +443,7 @@ void drawListPage(
         }
 
         // 空列表提示
-        if (entries.empty()) {
+        if (!html && entries.empty()) {
             drawText(
                 ctx,
                 font,
@@ -449,6 +453,27 @@ void drawListPage(
                 1.2f,
                 ui::TextAlignment::Center
             );
+        }
+
+
+
+        // Selected-server details: native banner, full introduction, endpoint attribution.
+        if (!entries.empty()) {
+            auto it=std::find_if(entries.begin(),entries.end(),[](auto const& e){return e.id==gSelectedId;});
+            if(it!=entries.end()){
+                auto const status=ServerStatus::getInstance().get(statusKey(*it));
+                auto const visual=resolvedVisual(*it,status);
+                Rect const detail{rowX0,rowsBottom+10,rowX1,panel.y1-66};
+                fillRect(ctx,detail,color8(36,36,41),1.0f);
+                float const w=std::min(detail.width()*0.49f,detail.height()*3.0f);
+                renderImage(ctx,{detail.x0+6,detail.y0+6,detail.x0+w-6,detail.y1-6},visual.introImage,true);
+                auto intro=visual.introText;
+                if(intro.empty()) intro=status&&!status->level.empty()?status->level:"欢迎来到本服务器";
+                drawText(ctx,font,{detail.x0+w+8,detail.y0+8,detail.x1-8,detail.y1-24},truncateUtf8(intro,768),color8(235,235,240),0.95f);
+                std::string source=status&&status->visual?"已获取服务器图文":"内置默认图片";
+                if(status&&status->state==ServerStatusState::Failed)source="查询失败，保留缓存/默认图";
+                drawText(ctx,font,{detail.x0+w+8,detail.y1-20,detail.x1-8,detail.y1-4},source,color8(160,180,160),0.8f);
+            }
         }
 
         // 翻页
@@ -478,10 +503,10 @@ void drawListPage(
         );
 
         // 底部按钮
-        float by = panel.y1 - 58.0f;
-        gRefreshBtn = Rect{panel.x0 + 16.0f, by, panel.x0 + 128.0f, by + kButtonH};
-        gAddBtn     = Rect{panel.x0 + 136.0f, by, panel.x0 + 248.0f, by + kButtonH};
-        gCloseBtn   = Rect{panel.x1 - 152.0f, by, panel.x1 - 24.0f, by + kButtonH};
+        float by = panel.y1 - 58.0f * u;
+        gRefreshBtn = Rect{panel.x0 + 16.0f, by, panel.x0 + 128.0f, by + kButtonH * gU};
+        gAddBtn     = Rect{panel.x0 + 136.0f, by, panel.x0 + 248.0f, by + kButtonH * gU};
+        gCloseBtn   = Rect{panel.x1 - 152.0f, by, panel.x1 - 24.0f, by + kButtonH * gU};
 
         {
             float bandTop    = panel.y1 - 120.0f;
@@ -520,6 +545,7 @@ void drawFormPage(
     );
 
     std::lock_guard lock(gMutex);
+    gPanel=panel; gPanelValid=true;
     float           y     = panel.y0 + 54.0f;
     float           fieldH = 34.0f;
     for (std::size_t i = 0; i < gFields.size(); ++i) {
@@ -554,23 +580,12 @@ void drawFormPage(
         y += fieldH + 8.0f;
     }
 
-    {
-        std::string dbg = "fields=" + std::to_string(gFields.size()) + " active=" + std::to_string(gFormActive)
-                        + " addr=" + std::to_string(gDraft.address.size()) + " name=" + std::to_string(gDraft.name.size())
-                        + " vk=" + std::to_string(gLastVk.load());
-        drawText(
-            ctx,
-            font,
-            Rect{panel.x0 + 16.0f, panel.y1 - 76.0f, panel.x1 - 16.0f, panel.y1 - 60.0f},
-            std::string_view{dbg},
-            color8(150, 200, 255),
-            0.85f
-        );
-    }
+    drawText(ctx,font,{panel.x0+16,panel.y1-76,panel.x1-16,panel.y1-60},
+        "保存后自动查询服务器图文；名称留空使用服务器名称",color8(160,180,160),0.85f);
 
     float by = panel.y1 - 44.0f;
-    gSaveBtn   = Rect{panel.x1 - 300.0f, by, panel.x1 - 160.0f, by + kButtonH};
-    gCancelBtn = Rect{panel.x1 - 148.0f, by, panel.x1 - 14.0f, by + kButtonH};
+    gSaveBtn   = Rect{panel.x1 - 300.0f, by, panel.x1 - 160.0f, by + kButtonH * gU};
+    gCancelBtn = Rect{panel.x1 - 148.0f, by, panel.x1 - 14.0f, by + kButtonH * gU};
     drawVanillaButton(ctx, font, gSaveBtn, std::string_view{"保存"}, mouseSeen && gSaveBtn.contains(mx, my));
     drawVanillaButton(ctx, font, gCancelBtn, std::string_view{"取消"}, mouseSeen && gCancelBtn.contains(mx, my));
 }
@@ -585,6 +600,8 @@ void drawConfirmPage(
     bool                      mouseSeen
 ) {
     Rect box{sw * 0.34f, sh * 0.34f, sw * 0.66f, sh * 0.62f};
+    std::lock_guard lock(gMutex);
+    gPanel=box; gPanelValid=true;
     fillRect(ctx, box, color8(34, 34, 40), 0.99f);
     fillRect(ctx, Rect{box.x0 - 1, box.y0 - 1, box.x1 + 1, box.y1 + 1}, color8(110, 110, 120), 1.0f);
     drawText(
@@ -597,8 +614,8 @@ void drawConfirmPage(
         ui::TextAlignment::Center
     );
     float by = box.y1 - 44.0f;
-    gYesBtn      = Rect{box.x0 + 20.0f, by, box.x0 + 20.0f + 120.0f, by + kButtonH};
-    gNoBtn       = Rect{box.x1 - 140.0f, by, box.x1 - 20.0f, by + kButtonH};
+    gYesBtn      = Rect{box.x0 + 20.0f, by, box.x0 + 20.0f + 120.0f, by + kButtonH * gU};
+    gNoBtn       = Rect{box.x1 - 140.0f, by, box.x1 - 20.0f, by + kButtonH * gU};
     drawVanillaButton(ctx, font, gYesBtn, std::string_view{"确定"}, mouseSeen && gYesBtn.contains(mx, my));
     drawVanillaButton(ctx, font, gNoBtn, std::string_view{"取消"}, mouseSeen && gNoBtn.contains(mx, my));
 }
@@ -748,8 +765,9 @@ void pollKeyboard() {
             return;
         }
         gFormId = ServerStore::getInstance().upsert(srv);
+
         ServerStore::getInstance().save();
-        ServerStatus::getInstance().request(statusKey(srv), srv.address, srv.port);
+        ServerStatus::getInstance().request(statusKey(srv), srv.address, srv.port, true);
         gPage = Page::List;
         return;
     }
@@ -810,74 +828,58 @@ void pollKeyboard() {
     }
 }
 
+bool queryCursorClient(int& outX, int& outY);
+
 void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
-    auto& ctx  = event.uiRenderContext();
+    auto& ctx = event.uiRenderContext();
     auto& view = event.screenView();
-
-    glm::vec2 size = view.mSize;
-    float     sw   = size.x;
-    float     sh   = size.y;
-    if (!(sw > 1.0f) || !(sh > 1.0f)) {
-        sw = 1920.0f;
-        sh = 1080.0f;
+    // AfterUIRenderEvent fires for EACH ScreenView, not once per frame. Drawing
+    // again on toast/debug was the source of duplicated dark overlay layers.
+    if (view.getScreenName() != "start_screen") return;
+    auto ci = ll::service::bedrock::getClientInstance();
+    if (!ci) { gVisible.store(false); return; }
+    auto const size = view.mSize.get();
+    float const sw = size.x, sh = size.y;
+    auto const stack = ci->getCurrentSceneStack();
+    bool sceneAllowed = true;
+    for (auto const& name : stack->getScreenNames()) {
+        if (name != "start_screen" && name != "toast_screen" && name != "debug_screen"
+            && name != "cubemap_background_screen") sceneAllowed = false;
     }
-
-    static int frame = 0;
-    ++frame;
-    tTracing        = (frame < 3);
-
-    auto optCi = ll::service::bedrock::getClientInstance();
-    if (!optCi) {
-        return;
+    auto const menu = inspectMenu(view);
+    bool const allowed = vanilla::allowOverlay(sceneAllowed, menu.playVisible, menu.modalVisible, menu.focusModal)
+                         && sw > 1.0f && sh > 1.0f;
+    static std::string lastState;
+    auto const state = std::string(allowed ? "visible" : "hidden") + ":" + menu.modalName
+        + (menu.playVisible ? ":play" : ":no-play");
+    if (state != lastState) {
+        lastState=state;
+        probeLogger().info("[UI/native-v2] {} modal={} focusModal={} play=({},{} {}x{}) step={}",
+            state, menu.modalVisible, menu.focusModal, menu.play.x0,menu.play.y0,
+            menu.play.width(),menu.play.height(),menu.rowStep);
     }
-    FontHandle handle = optCi->getFontHandle();
-    auto       font   = handle.mDefaultFont;
-    if (!font) {
-        return;
-    }
-
-    static std::array<std::string_view, 4> const kMainMenuScreens{
-        "start_screen",
-        "toast_screen",
-        "debug_screen",
-        "cubemap_background_screen"
-    };
-    static bool        cachedAllowed = false;
-    static int         cacheTick     = 0;
-    static std::string lastLogged;
-    if ((cacheTick++ % 4) == 0) {
-        std::vector<std::string> names;
-        if (auto ci = ll::service::bedrock::getClientInstance()) {
-            auto stack = ci->getCurrentSceneStack();
-            names      = stack->getScreenNames();
+    gVisible.store(allowed);
+    {
+        std::lock_guard lock(gMutex);
+        gLastMenuFrame = Clock::now();
+        if (!allowed) {
+            // Hide AND invalidate hit targets: a native popup must receive all
+            // input. Never let invisible stale hitboxes consume its buttons.
+            gButtonValid=false; gPanelValid=false; gRows.clear();
         }
-        bool        allowed = !names.empty();
-        std::string joined;
-        for (auto const& n : names) {
-            if (!joined.empty()) {
-                joined += "|";
-            }
-            joined += n;
-            bool known = false;
-            for (auto const& k : kMainMenuScreens) {
-                if (n == k) {
-                    known = true;
-                    break;
-                }
-            }
-            if (!known) {
-                allowed = false;
-            }
-        }
-        if (joined != lastLogged) {
-            lastLogged = joined;
-            probeLogger().info("[UI] 场景栈: {} 绘制={}", joined, allowed);
-        }
-        cachedAllowed = allowed;
     }
-    gVisible.store(cachedAllowed);
-    if (!cachedAllowed) {
-        return;
+    if (!allowed) return;
+    FontHandle handle = ci->getFontHandle();
+    auto font=handle.mDefaultFont;
+    if (!font) { gVisible.store(false); return; }
+    // Keep the game's logical pixel size. Window resize/GUI-scale changes are
+    // already reflected in the Play control geometry and the UI coordinate space.
+    gU=1.0f;
+    auto const entry = vanilla::menuEntry(menu.play,menu.rowStep);
+    int px=0, py=0;
+    if (queryCursorClient(px,py)) {
+        float const scale=ci->getGuiScale();
+        if (scale>0.0f) { std::lock_guard lock(gMutex); gMouseX=px/scale; gMouseY=py/scale; gMouseSeen=true; }
     }
 
     gTextKeep.clear();
@@ -898,7 +900,7 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     pollKeyboard();
 
     if (!open) {
-        drawMenuButton(ctx, *font, sw, sh, mx, my, mouseSeen);
+        drawMenuButton(ctx, *font, entry, mx, my, mouseSeen);
     } else if (page == Page::List) {
         drawListPage(ctx, *font, sw, sh, mx, my, mouseSeen);
     } else if (page == Page::Form) {
@@ -970,9 +972,12 @@ void startAddForm() {
 
 SavedServer draftToServer() {
     SavedServer srv;
+    if(auto existing=ServerStore::getInstance().get(gFormId))srv=*existing;
+    auto const previous=statusKey(srv);
     srv.id   = gFormId;
     srv.name = gDraft.name;
     parseAddress(gDraft.address, srv.address, srv.port);
+    if(previous!=statusKey(srv))ServerStatus::getInstance().invalidate(previous);
     return srv;
 }
 
@@ -1019,8 +1024,10 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
             );
         }
     }
-    if (!gVisible.load()) {
-        return;
+    if (!gVisible.load()) return;
+    {
+        std::lock_guard lock(gMutex);
+        if (Clock::now() - gLastMenuFrame > std::chrono::milliseconds(250)) return;
     }
     auto ci = ll::service::bedrock::getClientInstance();
     if (!ci) {
@@ -1056,11 +1063,9 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         }
     }
 
-    int  buttonId = static_cast<int>(event.buttonData());
-    int  actionId = static_cast<int>(event.actionButtonId());
-    if (buttonId == 0 && actionId == 0) {
-        return;
-    }
+    int const buttonId = static_cast<int>(event.buttonData());
+    int const actionId = static_cast<int>(event.actionButtonId());
+    if (actionId != 1 || buttonId != 1) return; // left press only
     auto now = Clock::now();
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - gLastClick).count() < 200) {
         return;
@@ -1076,7 +1081,6 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     Rect  addHit{}, refreshHit{}, closeHit{};
     std::vector<FormField> fields;
     std::string            formId;
-    int                    formActive{};
     {
         std::lock_guard lock(gMutex);
         open        = gOpen;
@@ -1098,13 +1102,14 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         noBtn       = gNoBtn;
         fields      = gFields;
         formId      = gFormId;
-        formActive  = gFormActive;
     }
 
     probeLogger().info("[UI] click ui=({}, {}) page={} open={}", uiX, uiY, static_cast<int>(page), open ? 1 : 0);
 
     if (!open) {
         if (buttonValid && button.contains(uiX, uiY)) {
+            event.cancel();
+            refreshServers();
             std::lock_guard lock(gMutex);
             gOpen = true;
             gPage = Page::List;
@@ -1113,21 +1118,21 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     }
 
     if (page == Page::List) {
-        if (closeHit.contains(uiX, uiY) || inflate(closeBtn, 6.0f).contains(uiX, uiY)) {
+        if (closeBtn.contains(uiX, uiY)) {
             probeLogger().info("[UI] hit close");
             std::lock_guard lock(gMutex);
             gOpen = false;
             return;
         }
-        if (addHit.contains(uiX, uiY) || inflate(addBtn, 6.0f).contains(uiX, uiY)) {
+        if (addBtn.contains(uiX, uiY)) {
             probeLogger().info("[UI] hit add");
             startAddForm();
             return;
         }
-        if (refreshHit.contains(uiX, uiY) || inflate(refreshBtn, 6.0f).contains(uiX, uiY)) {
+        if (refreshBtn.contains(uiX, uiY)) {
             auto entries = ServerStore::getInstance().list();
             for (auto const& e : entries) {
-                ServerStatus::getInstance().request(statusKey(e), e.address, e.port);
+                ServerStatus::getInstance().request(statusKey(e), e.address, e.port, true);
             }
             respondError("已触发状态刷新");
             return;
@@ -1169,7 +1174,8 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
                 return;
             }
             if (row.row.contains(uiX, uiY)) {
-                respondError("进服接口待 MCAPI 批准（#352）");
+                std::lock_guard lock(gMutex);
+                gSelectedId=row.id;
                 return;
             }
         }
@@ -1184,7 +1190,9 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
                 id = gFormId;
             }
             if (!id.empty()) {
+                if(auto e=ServerStore::getInstance().get(id))ServerStatus::getInstance().invalidate(statusKey(*e));
                 ServerStore::getInstance().remove(id);
+
                 ServerStore::getInstance().save();
             }
             std::lock_guard lock(gMutex);
@@ -1218,8 +1226,9 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
             return;
         }
         auto id = ServerStore::getInstance().upsert(srv);
+
         ServerStore::getInstance().save();
-        ServerStatus::getInstance().request(statusKey(srv), srv.address, srv.port);
+        ServerStatus::getInstance().request(statusKey(srv), srv.address, srv.port, true);
         {
             std::lock_guard lock(gMutex);
             gFormId = id;
@@ -1237,7 +1246,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
 } // namespace
 
 void registerProbeOverlay() {
-    probeLogger().info("[UI] probe overlay 已注册 (build 2026-11-16T16:35)");
+    probeLogger().info("[UI/native-v2] vanilla textures + native Play geometry + inline modal guard");
     auto& bus = ll::event::EventBus::getInstance();
     if (!gRenderListener) {
         gRenderListener = bus.emplaceListener<ll::event::render::AfterUIRenderEvent>(

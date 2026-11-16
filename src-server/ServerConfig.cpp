@@ -1,6 +1,7 @@
 #include "ServerConfig.h"
 
 #include "common/Validation.h"
+#include "LogoData.h"
 
 #include <fstream>
 #include <sstream>
@@ -21,6 +22,7 @@ json toJson(ServerConfig const& cfg) {
     j["serverId"]      = cfg.visual.serverId;
     j["logoId"]        = cfg.visual.logoId;
     j["logoUrl"]       = cfg.visual.logoUrl;
+    j["logoData"]      = cfg.logoData;
     j["introText"]     = cfg.visual.introText;
     j["introImageId"]  = cfg.visual.introImageId;
     j["introImageUrl"] = cfg.visual.introImageUrl;
@@ -46,6 +48,10 @@ void applyJson(json const& j, ServerConfig& cfg) {
     readString("serverId", cfg.visual.serverId);
     readString("logoId", cfg.visual.logoId);
     readString("logoUrl", cfg.visual.logoUrl);
+    // Optional HTTP-only override: removing the key must restore URL/builtin on reload.
+    cfg.logoData.clear();
+    readString("logoData", cfg.logoData);
+    if (!cfg.logoData.empty() && !isValidLogoData(cfg.logoData)) cfg.logoData.clear();
     readString("introText", cfg.visual.introText);
     readString("introImageId", cfg.visual.introImageId);
     readString("introImageUrl", cfg.visual.introImageUrl);

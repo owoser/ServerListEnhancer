@@ -1,0 +1,12 @@
+const fs=require('node:fs');
+const path=require('node:path');
+const {spawn}=require('node:child_process');
+const root=process.cwd();
+const inbox=path.join(root,'build','server-command.txt');
+fs.writeFileSync(inbox,'');
+const p=spawn('D:/MCserver/SER-DEV/bedrock_server_mod.exe',[],{cwd:'D:/MCserver/SER-DEV',stdio:['pipe','inherit','inherit']});
+let seen='';
+const watch=fs.watch(path.dirname(inbox),()=>{let s;try{s=fs.readFileSync(inbox,'utf8').trim();}catch{return;}if(s&&s!==seen){seen=s;const cmd=s.split('\n').slice(1).join('\n');if(cmd)p.stdin.write(cmd+'\n');}});
+p.on('error',e=>{console.error(e);watch.close();process.exitCode=1;});
+p.on('exit',code=>{watch.close();process.exitCode=code||0;});
+process.on('SIGTERM',()=>p.stdin.write('stop\n'));

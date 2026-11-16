@@ -7,6 +7,7 @@
 #include "common/ServerVisualPacket.h"
 #include "common/VisualSpec.h"
 #include "ServerConfig.h"
+#include "JoinInfoExtension.h"
 
 #include "ll/api/command/Command.h"
 #include "ll/api/command/CommandHandle.h"
@@ -24,15 +25,14 @@
 
 namespace sle::server {
 
-namespace {
-
-constexpr char kCommandName[] = "sle";
-
+// Reflection of required parameter names needs externally linked types (Boost.PFR).
 enum class AdminAction { reload, push };
-
 struct ActionParam {
     AdminAction action;
 };
+
+namespace {
+constexpr char kCommandName[] = "sle";
 
 // 玩家进服时下发视觉档案；客户端未装模组时 canSendTo 返回 false，静默跳过
 void onPlayerJoin(ll::event::PlayerJoinEvent& event) {
@@ -78,12 +78,13 @@ void registerCommand() {
 
     auto& command = registrar.getOrCreateCommand(kCommandName, "服务器列表增强插件管理命令", CommandPermissionLevel::GameDirectors);
 
-    command.overload<ActionParam>().execute(
+    command.overload<ActionParam>().required("action").execute(
         [](CommandOrigin const&, CommandOutput& output, ActionParam const& param, Command const&) {
             switch (param.action) {
             case AdminAction::reload:
                 if (ConfigManager::getInstance().reload()) {
-                    output.success("配置已重新加载");
+                    refreshJoinInfoSnapshot();
+                    output.success("配置已重新加载，HTTP视觉快照已发布");
                     sendToAll();
                 } else {
                     output.error("配置重新加载失败，请检查 config.json");
@@ -128,10 +129,13 @@ bool ServerEntry::load() {
     auto const& cfg = ConfigManager::getInstance().get();
     logger.setLevel(static_cast<ll::io::LogLevel>(cfg.logLevel));
     logger.info("配置已加载: {}", configPath.string());
+    refreshJoinInfoSnapshot();
     return true;
 }
 
 bool ServerEntry::enable() {
+    if (!installJoinInfoExtension()) return false;
+    setJoinInfoEnabled(true);
     if (!mListener) {
         mListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::PlayerJoinEvent>(onPlayerJoin);
     }
@@ -141,6 +145,7 @@ bool ServerEntry::enable() {
 }
 
 bool ServerEntry::disable() {
+    uninstallJoinInfoExtension();
     if (mListener) {
         ll::event::EventBus::getInstance().removeListener(mListener);
         mListener.reset();
@@ -149,8 +154,8 @@ bool ServerEntry::disable() {
 }
 
 bool ServerEntry::unload() {
-    getSelf().getLogger().info("ServerListEnhancer (server) 已卸载");
-    return true;
+    getSelf().getLogger().warn("HTTP 回调由游戏持有；不支持热卸载，请重启服务器更新模组。");
+    return false;
 }
 
 } // namespace sle::server
