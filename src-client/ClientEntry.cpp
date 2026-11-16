@@ -5,6 +5,7 @@
 #include "ClientEntry.h"
 
 #include "ProbeOverlay.h"
+#include "ServerStore.h"
 #include "SessionTracker.h"
 #include "VisualCache.h"
 #include "VisualPacketHandler.h"
@@ -45,6 +46,17 @@ bool ClientEntry::load() {
         logger.info("视觉缓存已加载: {} ({} 条)", cachePath.string(), cache.size());
     } else {
         logger.warn("视觉缓存读取失败或结构不兼容，按空缓存启动: {}", cachePath.string());
+    }
+
+    // mods/ServerListEnhancer/servers.json：自维护的服务器列表
+    auto serverPath = getSelf().getConfigDir().parent_path() / "servers.json";
+    serverPath.make_preferred();
+    auto& store = ServerStore::getInstance();
+    store.setPath(serverPath);
+    if (store.load()) {
+        logger.info("服务器列表已加载: {} ({} 条)", serverPath.string(), store.list().size());
+    } else {
+        logger.warn("服务器列表读取失败或结构不兼容，按空列表启动: {}", serverPath.string());
     }
 
     logger.info("ServerListEnhancer (client) 已加载");
