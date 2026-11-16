@@ -42,7 +42,7 @@ target("ServerListEnhancer")
     set_symbols("debug")
 
     add_packages("levilamina", "nlohmann_json")
-    add_syslinks("winhttp", "ws2_32")
+    add_syslinks("winhttp", "ws2_32", "user32")
 
     if is_plat("windows") then
         set_toolchains("clang-cl")

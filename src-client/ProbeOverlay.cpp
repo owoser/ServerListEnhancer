@@ -1,5 +1,7 @@
 #include "ProbeOverlay.h"
 
+#include <windows.h>
+
 #include "ClientEntry.h"
 #include "ServerStatus.h"
 #include "ServerStore.h"
@@ -95,11 +97,8 @@ Rect                gNoBtn{};
 bool                gBtnsValid{};
 
 struct FormDraft {
-    std::string name;
     std::string address;
-    std::string port{"19132"};
-    std::string logoUrl;
-    std::string introText;
+    std::string name;
 };
 
 FormDraft               gDraft;
@@ -592,6 +591,172 @@ void drawToast(MinecraftUIRenderContext& ctx, Font& font, float sw, float sh) {
     );
 }
 
+// ---------------- 键盘轮询（HBUI 抢焦点时 KeyInputEvent 收不到）----------------
+std::array<bool, 256> gKeyPrev{};
+
+bool keyEdge(int vk) {
+    bool now = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    bool was = gKeyPrev[static_cast<std::size_t>(vk)];
+    gKeyPrev[static_cast<std::size_t>(vk)] = now;
+    return now && !was;
+}
+
+std::string clipboardText() {
+    std::string out;
+    if (!OpenClipboard(nullptr)) {
+        return out;
+    }
+    if (HANDLE data = GetClipboardData(CF_UNICODETEXT)) {
+        if (auto* w = static_cast<wchar_t*>(GlobalLock(data))) {
+            int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+            if (n > 1) {
+                std::string buffer(static_cast<std::size_t>(n - 1), 0);
+                WideCharToMultiByte(CP_UTF8, 0, w, -1, buffer.data(), n, nullptr, nullptr);
+                out = buffer;
+            }
+            GlobalUnlock(data);
+        }
+    }
+    CloseClipboard();
+    return out;
+}
+
+char vkToChar(int vk) {
+    if (vk >= 0x30 && vk <= 0x39) {
+        return static_cast<char>(0x30 + (vk - 0x30));
+    }
+    if (vk >= 0x41 && vk <= 0x5A) {
+        bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        return static_cast<char>((shift ? 0x41 : 0x61) + (vk - 0x41));
+    }
+    switch (vk) {
+    case VK_OEM_PERIOD:
+        return 0x2E;
+    case VK_OEM_COMMA:
+        return 0x2C;
+    case VK_OEM_MINUS:
+        return 0x2D;
+    case VK_OEM_PLUS:
+        return 0x3D;
+    case VK_OEM_1:
+        return (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? 0x3A : 0x3B;
+    case VK_OEM_2:
+        return 0x2F;
+    case VK_OEM_3:
+        return (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? 0x7E : 0x60;
+    case VK_OEM_4:
+        return 0x5B;
+    case VK_OEM_5:
+        return 0x5C;
+    case VK_OEM_6:
+        return 0x5D;
+    case VK_OEM_7:
+        return 0x27;
+    case VK_SPACE:
+        return 0x20;
+    default:
+        return 0;
+    }
+}
+
+SavedServer draftToServer();
+
+void pollKeyboard() {
+    bool open{};
+    Page page{Page::List};
+    {
+        std::lock_guard lock(gMutex);
+        open = gOpen;
+        page = gPage;
+    }
+    if (!open) {
+        return;
+    }
+    if (page == Page::List || page == Page::Confirm) {
+        if (keyEdge(VK_ESCAPE)) {
+            std::lock_guard lock(gMutex);
+            if (page == Page::Confirm) {
+                gPage = Page::List;
+            } else {
+                gOpen = false;
+            }
+        }
+        return;
+    }
+
+    std::lock_guard lock(gMutex);
+    if (keyEdge(VK_ESCAPE)) {
+        gPage = Page::List;
+        return;
+    }
+    if (keyEdge(VK_TAB)) {
+        if (!gFields.empty()) {
+            gFormActive = (gFormActive + 1) % static_cast<int>(gFields.size());
+        }
+        return;
+    }
+    if (keyEdge(VK_RETURN)) {
+        auto srv = draftToServer();
+        if (srv.address.empty()) {
+            gToast   = "地址不能为空";
+            gToastAt = Clock::now();
+            return;
+        }
+        gFormId = ServerStore::getInstance().upsert(srv);
+        ServerStore::getInstance().save();
+        ServerStatus::getInstance().request(statusKey(srv), srv.address, srv.port);
+        gPage = Page::List;
+        return;
+    }
+    if (gFields.empty() || gFormActive < 0 || gFormActive >= static_cast<int>(gFields.size())) {
+        return;
+    }
+    auto* value = gFields[static_cast<std::size_t>(gFormActive)].value;
+    if (!value) {
+        return;
+    }
+    bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (ctrl && keyEdge(0x56)) {
+        auto text = clipboardText();
+        if (!text.empty()) {
+            *value += text;
+        }
+        return;
+    }
+    if (keyEdge(VK_BACK)) {
+        while (!value->empty() && (static_cast<unsigned char>(value->back()) & 0xC0) == 0x80) {
+            value->pop_back();
+        }
+        if (!value->empty()) {
+            value->pop_back();
+        }
+        return;
+    }
+    for (int vk = 0x30; vk <= 0x39; ++vk) {
+        if (keyEdge(vk)) {
+            *value += static_cast<char>(vk);
+        }
+    }
+    for (int vk = 0x41; vk <= 0x5A; ++vk) {
+        if (keyEdge(vk)) {
+            char c = vkToChar(vk);
+            if (c) {
+                *value += c;
+            }
+        }
+    }
+    int const punct[] = {VK_OEM_PERIOD, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PLUS, VK_OEM_1, VK_OEM_2,
+                         VK_OEM_3,      VK_OEM_4,     VK_OEM_5,     VK_OEM_6,    VK_OEM_7, VK_SPACE};
+    for (int vk : punct) {
+        if (keyEdge(vk)) {
+            char c = vkToChar(vk);
+            if (c) {
+                *value += c;
+            }
+        }
+    }
+}
+
 void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     auto& ctx  = event.uiRenderContext();
     auto& view = event.screenView();
@@ -675,6 +840,8 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
         page      = gPage;
     }
 
+    pollKeyboard();
+
     if (!open) {
         drawMenuButton(ctx, *font, sw, sh, mx, my, mouseSeen);
     } else if (page == Page::List) {
@@ -700,11 +867,39 @@ void respondError(std::string const& text) {
 
 void rebuildFields() {
     gFields.clear();
-    gFields.push_back({"名称", &gDraft.name, {}, false});
     gFields.push_back({"地址", &gDraft.address, {}, false});
-    gFields.push_back({"端口", &gDraft.port, {}, true});
-    gFields.push_back({"Logo", &gDraft.logoUrl, {}, false});
-    gFields.push_back({"简介", &gDraft.introText, {}, false});
+    gFields.push_back({"名称", &gDraft.name, {}, false});
+}
+
+// 解析 "host:port" / "[::1]:port" / "host"，缺省 19132
+void parseAddress(std::string const& raw, std::string& host, int& port) {
+    host = raw;
+    port = 19132;
+    // 去掉空白
+    host.erase(std::remove_if(host.begin(), host.end(), [](unsigned char c) { return std::isspace(c) != 0; }), host.end());
+    if (host.empty()) {
+        return;
+    }
+    std::size_t colon = host.rfind(':');
+    if (host.front() == '[') {
+        auto close = host.find(']');
+        if (close != std::string::npos && colon != std::string::npos && colon > close) {
+            host = host.substr(1, close - 1) + host.substr(close + 1);
+            colon = host.rfind(':');
+        }
+    }
+    if (colon != std::string::npos) {
+        auto portText = host.substr(colon + 1);
+        bool numeric  = !portText.empty() && portText.size() <= 5
+                     && std::all_of(portText.begin(), portText.end(), [](char c) { return c >= '0' && c <= '9'; });
+        if (numeric) {
+            int value = std::stoi(portText);
+            if (value > 0 && value <= 65535) {
+                port = value;
+            }
+            host = host.substr(0, colon);
+        }
+    }
 }
 
 void startAddForm() {
@@ -719,23 +914,9 @@ void startAddForm() {
 
 SavedServer draftToServer() {
     SavedServer srv;
-    srv.id        = gFormId;
-    srv.name      = gDraft.name;
-    srv.address   = gDraft.address;
-    srv.logoUrl   = gDraft.logoUrl;
-    srv.introText = gDraft.introText;
-    int port      = 0;
-    for (char c : gDraft.port) {
-        if (c < '0' || c > '9') {
-            port = 0;
-            break;
-        }
-        port = port * 10 + (c - '0');
-        if (port > 65535) {
-            break;
-        }
-    }
-    srv.port = (port > 0 && port <= 65535) ? port : 19132;
+    srv.id   = gFormId;
+    srv.name = gDraft.name;
+    parseAddress(gDraft.address, srv.address, srv.port);
     return srv;
 }
 
@@ -762,9 +943,18 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         gMouseSeen = true;
         openNow    = gOpen;
     }
-    // 面板打开时拦截所有鼠标事件：否则点击会穿透到被遮住的原版按钮（游戏/设置）
+    // 面板打开时，仅在面板区域内拦截鼠标，避免穿透点到被遮住的原版按钮
     if (openNow) {
-        event.cancel();
+        Rect panel{};
+        bool panelValid{};
+        {
+            std::lock_guard lock(gMutex);
+            panel      = gPanel;
+            panelValid = gPanelValid;
+        }
+        if (panelValid && panel.contains(uiX, uiY)) {
+            event.cancel();
+        }
     }
 
     int  buttonId = static_cast<int>(event.buttonData());
@@ -863,10 +1053,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
                 }
                 std::lock_guard lock(gMutex);
                 gDraft.name      = srv->name;
-                gDraft.address   = srv->address;
-                gDraft.port      = std::to_string(srv->port);
-                gDraft.logoUrl   = srv->logoUrl;
-                gDraft.introText = srv->introText;
+                gDraft.address   = srv->address + ":" + std::to_string(srv->port);
                 rebuildFields();
                 gFormId      = srv->id;
                 gFormActive  = 0;
@@ -940,78 +1127,6 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     }
 }
 
-void onKey(ll::event::input::KeyInputEvent& event) {
-    if (!gVisible.load() || !event.isDown()) {
-        return;
-    }
-    bool open{};
-    Page page{Page::List};
-    {
-        std::lock_guard lock(gMutex);
-        open = gOpen;
-        page = gPage;
-    }
-    if (!open) {
-        return;
-    }
-
-    int code = event.keyCode();
-    if (page == Page::List) {
-        if (code == 27) { // Esc
-            std::lock_guard lock(gMutex);
-            gOpen = false;
-        }
-        return;
-    }
-    if (page == Page::Confirm) {
-        if (code == 27) {
-            std::lock_guard lock(gMutex);
-            gPage = Page::List;
-        }
-        return;
-    }
-
-    // Form
-    std::lock_guard lock(gMutex);
-    if (code == 27) {
-        gPage = Page::List;
-        return;
-    }
-    if (code == 13) {
-        auto srv = draftToServer();
-        if (srv.address.empty()) {
-            gToast   = "地址不能为空";
-            gToastAt = Clock::now();
-            return;
-        }
-        gFormId = ServerStore::getInstance().upsert(srv);
-        ServerStore::getInstance().save();
-        gPage = Page::List;
-        return;
-    }
-    if (code == 9) { // Tab
-        if (!gFields.empty()) {
-            gFormActive = (gFormActive + 1) % static_cast<int>(gFields.size());
-        }
-        return;
-    }
-    if (!gFields.empty() && gFormActive >= 0 && gFormActive < static_cast<int>(gFields.size())) {
-        auto* value = gFields[static_cast<std::size_t>(gFormActive)].value;
-        if (!value) {
-            return;
-        }
-        if (code == 8) { // Backspace
-            if (!value->empty()) {
-                value->pop_back();
-            }
-            return;
-        }
-        if (code >= 32 && code <= 126) {
-            value->push_back(static_cast<char>(code));
-        }
-    }
-}
-
 } // namespace
 
 void registerProbeOverlay() {
@@ -1027,11 +1142,7 @@ void registerProbeOverlay() {
                 onMouse(event);
             });
     }
-    if (!gKeyListener) {
-        gKeyListener = bus.emplaceListener<ll::event::input::KeyInputEvent>([](ll::event::input::KeyInputEvent& event) {
-            onKey(event);
-        });
-    }
+
 }
 
 void unregisterProbeOverlay() {
