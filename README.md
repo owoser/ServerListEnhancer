@@ -32,7 +32,7 @@ Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05、普通 LeviLamina
 
 ## Android（ARM64）
 
-Android 原生包使用独立 Preloader SDK，当前绑定 LeviLauncher 1.6.0。首版入口位于世界内 HUD；主菜单入口、直连、GIF 动画和 UDP 探测尚未移植。目录、构建命令、手机导入步骤和与 Windows 的功能差异见 [Android 适配说明](<docs/android.md>)。
+Android 原生包使用独立 Preloader SDK，当前绑定 LeviLauncher 1.6.0。服务器入口仅在游戏首页显示，位于“社交”按钮左侧，运行时读取原版按钮资源；打开列表或离开首页即隐藏入口。直连、GIF 动画和 UDP 探测尚未移植。目录、构建命令、手机导入步骤和与 Windows 的功能差异见 [Android 适配说明](<docs/android.md>)。
 
 ```powershell
 ./scripts/package-android.ps1

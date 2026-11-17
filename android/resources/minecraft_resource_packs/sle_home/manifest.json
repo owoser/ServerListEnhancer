@@ -1,0 +1,29 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "ServerListEnhancer Home Entry",
+    "description": "Original ServerListEnhancer home entry built from the vanilla hyperlink button template.",
+    "uuid": "db04a445-6d47-465c-821c-9370024fcb4e",
+    "version": [
+      1,
+      0,
+      4
+    ],
+    "min_engine_version": [
+      1,
+      26,
+      0
+    ]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "15f9f729-b660-4b11-80ef-57de719f1ad1",
+      "version": [
+        1,
+        0,
+        4
+      ]
+    }
+  ]
+}

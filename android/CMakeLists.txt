@@ -48,7 +48,7 @@ foreach(file config.json config.schema.json)
     endif()
 endforeach()
 add_subdirectory("${preloader_android_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/_preloader_android")
-add_library(server_list_enhancer SHARED src/AndroidMod.cpp src/AndroidPlatform.cpp
+add_library(server_list_enhancer SHARED src/AndroidMod.cpp src/AndroidPlatform.cpp src/HomeUi.cpp
     ../src-client/ServerStore.cpp ../src/common/BuiltinImages.cpp)
 target_include_directories(server_list_enhancer PRIVATE src ../src ../src-client
     "${preloader_android_SOURCE_DIR}/include")

@@ -1,6 +1,7 @@
 #include "AndroidPlatform.h"
 #include "Config.h"
 #include "Discovery.h"
+#include "HomeUi.h"
 #include "ServerStore.h"
 #include "TextEdit.h"
 #include "common/BuiltinImages.h"
@@ -26,7 +27,6 @@ using namespace std::chrono_literals;
 using sle::client::SavedServer;
 using sle::client::ServerStore;
 constexpr const char* Module="server_list_enhancer.list";
-constexpr const char* Button="server_list_enhancer.open";
 std::mutex cacheWriteMutex;
 std::string cacheName(std::string_view s) {
     std::uint64_t hash=14695981039346656037ULL;
@@ -75,7 +75,23 @@ class AndroidMod {
     std::vector<Hit> hits;
     std::string selected,editId,name,address,notice;
     client::TextEdit nameEdit,addressEdit;
-    std::filesystem::path cache;
+    std::filesystem::path cache,modRoot;
+    JavaVM* javaVm{};
+
+    bool homeAllowed() const {
+        auto state=homeUiState();return state.ready&&state.home&&!state.blocked;
+    }
+    void dismiss() {
+        bool wasOpen=open;open=form=confirm=false;pressed=-1;hits.clear();
+        if(wasOpen)pl::input::hideKeyboard();
+    }
+    void openFromHome() {
+        if(!active)return;auto state=homeUiState();
+        {std::lock_guard lock(mutex);
+        if(!moduleEnabled||!state.ready||!state.home||state.blocked){submitHomeUiFrame(0,{},state.session);return;}
+        open=true;form=confirm=false;pressed=-1;hits.clear();}
+        refresh();
+    }
 
     void enqueue(const SavedServer& s) {
         if(!client::validServerEndpoint(s.address,s.port))return;
@@ -127,8 +143,8 @@ class AndroidMod {
                 auto lp=image(logo,false);if(!active.load())break;auto bp=image(banner,true);if(!active.load())break;
                 std::lock_guard lock(mutex);
                 if(current(task)&&selected==server.id){
-                    logoReady=lp&&pl::modmenu::registerImage("sle.selected.logo",lp.rgba,lp.width,lp.height);
-                    bannerReady=bp&&pl::modmenu::registerImage("sle.selected.banner",bp.rgba,bp.width,bp.height);
+                    logoReady=lp&&registerHomeUiImage("sle.selected.logo",lp.rgba,lp.width,lp.height);
+                    bannerReady=bp&&registerHomeUiImage("sle.selected.banner",bp.rgba,bp.width,bp.height);
                     if(logoReady){logoWidth=lp.width;logoHeight=lp.height;}if(bannerReady){bannerWidth=bp.width;bannerHeight=bp.height;}
                 }
             }
@@ -150,7 +166,7 @@ class AndroidMod {
         switch(hit.action) {
         case 1:refresh();notice="已排队查询全部服务器";break;
         case 2:newForm({});break;
-        case 3:open=false;form=false;hits.clear();pl::input::hideKeyboard();break;
+        case 3:dismiss();break;
         case 4:if(page>0)--page;break;
         case 5:++page;break;
         case 6:selected=hit.id;logoReady=bannerReady=false;if(auto s=ServerStore::getInstance().get(selected))enqueue(*s);break;
@@ -164,16 +180,16 @@ class AndroidMod {
         }
     }
     bool touch(const pl::input::TouchEvent& event) {
-        if(!active)return false;std::lock_guard lock(mutex);if(!moduleEnabled||!open)return false;
+        if(!active||!homeAllowed())return false;std::lock_guard lock(mutex);if(!moduleEnabled||!open)return false;
         auto x=event.x/scale,y=event.y/scale;int action=event.action&255;
         if(action==0){pressed=-1;for(std::size_t i=0;i<hits.size();++i)if(hits[i].contains(x,y)){pressed=static_cast<int>(i);break;}}
         if(action==1){int index=pressed;pressed=-1;if(index>=0&&static_cast<std::size_t>(index)<hits.size()&&hits[index].contains(x,y)){auto hit=hits[index];act(hit);}}
         if(action==3)pressed=-1;return true;
     }
     bool key(const pl::input::KeyEvent& event) {
-        if(!active)return false;std::lock_guard lock(mutex);if(!moduleEnabled||!open)return false;
+        if(!active||!homeAllowed())return false;std::lock_guard lock(mutex);if(!moduleEnabled||!open)return false;
         if(!event.isKeyDown)return true;
-        if(event.keyCode==4){if(form){form=confirm=false;pl::input::hideKeyboard();}else open=false;return true;}
+        if(event.keyCode==4){if(form){form=confirm=false;pressed=-1;pl::input::hideKeyboard();}else dismiss();return true;}
         if(!form||confirm)return true;
         auto& text=focus?address:name;auto& editor=focus?addressEdit:nameEdit;
         if(event.keyCode==67)editor.backspace(text);
@@ -186,18 +202,22 @@ class AndroidMod {
     }
     void render() {
         auto logo=decodeImage(client::builtin::logo(),false),banner=decodeImage(client::builtin::banner(),true);
-        if(logo)pl::modmenu::registerImage("sle.default.logo",logo.rgba,logo.width,logo.height);
-        if(banner)pl::modmenu::registerImage("sle.default.banner",banner.rgba,banner.width,banner.height);
+        if(logo)registerHomeUiImage("sle.default.logo",logo.rgba,logo.width,logo.height);
+        if(banner)registerHomeUiImage("sle.default.banner",banner.rgba,banner.width,banner.height);
+        int lastMode=0;
         while(active.load()) {
-            auto display=surface();std::vector<pl::modmenu::DrawCommand> commands;
+            auto display=homeUiState();std::vector<pl::modmenu::DrawCommand> commands;int mode=0;
             {std::lock_guard lock(mutex);hits.clear();
-            if(open&&moduleEnabled&&display.width>0&&display.height>0){
+            const bool allowed=display.ready&&display.home&&!display.blocked&&moduleEnabled&&display.width>0&&display.height>0;
+            if(!allowed)dismiss();
+            else if(open)mode=2;
+            if(mode==2){
                 scale=std::max(.5f,std::min(display.width/800.f,display.height/480.f));viewWidth=display.width/scale;viewHeight=display.height/scale;
                 auto rect=[&](float x,float y,float w,float h,std::uint32_t color){commands.push_back({.type=pl::modmenu::DrawCommandType::RectFilled,.x=x*scale,.y=y*scale,.w=w*scale,.h=h*scale,.color=color});};
                 auto text=[&](float x,float y,std::string value,float size=16,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=x*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
                 auto button=[&](float x,float y,float w,std::string label,int action,std::string id=std::string{}){rect(x,y,w,36,0xff424242);text(x+10,y+8,std::move(label),16);hits.push_back({x,y,w,36,action,std::move(id)});};
                 auto image=[&](const char* id,float x,float y,float w,float h,int iw,int ih){float r=std::min(w/iw,h/ih);commands.push_back({.type=pl::modmenu::DrawCommandType::Image,.x=(x+(w-iw*r)/2)*scale,.y=(y+(h-ih*r)/2)*scale,.w=iw*r*scale,.h=ih*r*scale,.color=0xffffffff,.imageId=id});};
-                rect(0,0,viewWidth,viewHeight,0xc0202422);float left=20,right=viewWidth-20;
+                rect(0,0,viewWidth,viewHeight,0xff1c201e);float left=20,right=viewWidth-20;
                 text(left,16,"服务器列表",24);button(right-280,16,80,"刷新",1);button(right-190,16,90,"添加",2);button(right-90,16,90,"关闭",3);
                 if(form){
                     float x=std::max(20.f,(viewWidth-560)/2);rect(x,65,560,310,0xff303632);text(x+20,75,confirm?"确认删除此服务器？":editId.empty()?"添加服务器":"编辑服务器",22);
@@ -229,14 +249,15 @@ class AndroidMod {
                     if(!notice.empty())text(left+300,viewHeight-38,fit(notice,22),13,0xffcbdfb0);
                 }
             }}
-            pl::modmenu::submitDrawCommands(Module,commands);std::this_thread::sleep_for(50ms);
+            if(mode==2||lastMode!=0||display.session!=0)submitHomeUiFrame(mode,commands,display.session);
+            lastMode=mode;std::this_thread::sleep_for(50ms);
         }
-        pl::modmenu::submitDrawCommands(Module,{});
+        submitHomeUiFrame(0,{},0);
     }
 public:
     static AndroidMod& instance(){static AndroidMod mod;return mod;}
     bool load(pl::mod::ModContext& context){
-        setJavaVm(context.javaVm());cache=context.dataDir()/"cache";std::error_code ec;std::filesystem::create_directories(cache,ec);if(ec)return false;
+        javaVm=context.javaVm();modRoot=context.modRootPath();setJavaVm(javaVm);cache=context.dataDir()/"cache";std::error_code ec;std::filesystem::create_directories(cache,ec);if(ec)return false;
         auto& store=ServerStore::getInstance();store.setPath(context.modRootPath()/"servers.json");if(!store.load())return false;
         auto configPath=context.configDir()/"config.json";Config config;
         if(std::filesystem::exists(configPath)){std::ifstream file(configPath);auto j=nlohmann::json::parse(file,nullptr,false);if(!j.is_object())return false;config=pl::reflection::deserialize<Config>(j);}
@@ -249,19 +270,21 @@ public:
     bool enable(){
         active=true;
         pl::modmenu::ModuleInfo module;module.moduleId=Module;module.displayName="服务器列表增强";module.description="独立列表、触控编辑与服务器图文资料";module.defaultEnabled=moduleEnabled;module.hideInHudEditor=true;
-        module.onToggle=[this](std::string_view,bool enabled){std::lock_guard lock(mutex);moduleEnabled=enabled;if(!enabled){open=false;form=false;pl::input::hideKeyboard();}};
+        module.onToggle=[this](std::string_view,bool enabled){std::lock_guard lock(mutex);moduleEnabled=enabled;if(!enabled)dismiss();};
         if(!pl::modmenu::registerModule(module)){active=false;return false;}
-        pl::modmenu::ButtonInfo button;button.buttonId=Button;button.moduleId=Module;button.displayName="服务器列表";button.label="服务器";button.widthScale=2;button.stylePreset=pl::modmenu::ButtonStylePreset::Accent;
-        button.onEvent=[this](std::string_view,pl::modmenu::ButtonEvent e,float){if(e!=pl::modmenu::ButtonEvent::Click||!active)return;std::lock_guard lock(mutex);if(!moduleEnabled)return;open=!open;form=false;if(open)refresh();else pl::input::hideKeyboard();};
-        if(!pl::modmenu::registerButton(button)){pl::modmenu::unregisterModule(Module);active=false;return false;}
-        if(!inputRegistered){pl::input::registerTouchCallback([this](const auto& e){return touch(e);});pl::input::registerKeyCallback([this](const auto& e){return key(e);});inputRegistered=true;}
+        if(!initializeHomeUi(javaVm,modRoot,[this]{openFromHome();},
+            [this](float x,float y,int action){pl::input::TouchEvent event{};event.x=x;event.y=y;event.action=action;return touch(event);},
+            [this]{pl::input::KeyEvent event{};event.keyCode=4;event.isKeyDown=true;return key(event);})){
+            pl::modmenu::unregisterModule(Module);active=false;return false;
+        }
+        if(!inputRegistered){pl::input::registerKeyCallback([this](const auto& e){return key(e);});inputRegistered=true;}
         for(int i=0;i<2;++i)workers.emplace_back([this]{worker();});renderer=std::thread([this]{render();});
-        __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Enabled server list module, floating button and two workers");return true;
+        __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Enabled home-screen server entry and two workers");return true;
     }
     bool disable(){
         active=false;changed.notify_all();if(renderer.joinable())renderer.join();for(auto& t:workers)if(t.joinable())t.join();workers.clear();
         {std::lock_guard lock(mutex);open=form=false;hits.clear();tasks.clear();}
-        pl::input::hideKeyboard();pl::modmenu::unregisterButton(Button);pl::modmenu::unregisterModule(Module);return ServerStore::getInstance().save();
+        pl::input::hideKeyboard();closeHomeUi();pl::modmenu::unregisterModule(Module);return ServerStore::getInstance().save();
     }
     bool unload(){return true;}
 };
