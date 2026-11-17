@@ -1,5 +1,6 @@
 #include "ImageProvider.h"
 #include "common/BuiltinImages.h"
+#include "GifAnimation.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -99,7 +100,7 @@ static bool pngSignature(std::span<unsigned char const> bytes) {
     return bytes.size() >= Png.size() && std::equal(Png.begin(), Png.end(), bytes.begin());
 }
 static bool supportedSignature(std::span<unsigned char const> bytes) {
-    return pngSignature(bytes) || (bytes.size() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff);
+    return isGif(bytes) || pngSignature(bytes) || (bytes.size() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff);
 }
 static std::string sha256(std::span<unsigned char const> bytes) {
     BCRYPT_ALG_HANDLE algorithm{};
@@ -209,7 +210,7 @@ static std::optional<Bytes> download(std::string const& url, Clock::time_point d
     WinHttpSetTimeouts(session.value, 4000, 4000, 4000, 4000);
     HttpHandle connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
     if (!connection) return std::nullopt;
-    wchar_t const* accept[]{L"image/png", L"image/jpeg", nullptr};
+    wchar_t const* accept[]{L"image/png", L"image/jpeg", L"image/gif", nullptr};
     HttpHandle request{WinHttpOpenRequest(connection.value, L"GET", target.c_str(), nullptr,
         WINHTTP_NO_REFERER, accept, parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)};
     if (!request) return std::nullopt;
@@ -251,7 +252,7 @@ static std::optional<Bytes> download(std::string const& url, Clock::time_point d
         std::wstring type{contentType};
         auto const semicolon = type.find(L';');
         if (semicolon != std::wstring::npos) type.resize(semicolon);
-        if (_wcsicmp(type.c_str(), L"image/png") != 0 && _wcsicmp(type.c_str(), L"image/jpeg") != 0) return std::nullopt;
+        if (_wcsicmp(type.c_str(), L"image/png") != 0 && _wcsicmp(type.c_str(), L"image/jpeg") != 0 && _wcsicmp(type.c_str(), L"image/gif") != 0) return std::nullopt;
     } else if (GetLastError() != ERROR_WINHTTP_HEADER_NOT_FOUND) return std::nullopt;
     wchar_t contentLength[64]{};
     DWORD lengthSize = sizeof(contentLength);
@@ -298,8 +299,8 @@ static std::optional<Bytes> normalize(IWICImagingFactory* factory, std::span<uns
         || FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(input.data()), static_cast<DWORD>(input.size())))
         || FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder))
         || FAILED(decoder->GetContainerFormat(&container))
-        || (container != GUID_ContainerFormatPng && container != GUID_ContainerFormatJpeg)
-        || FAILED(decoder->GetFrameCount(&count)) || count != 1
+        || (container != GUID_ContainerFormatPng && container != GUID_ContainerFormatJpeg && container != GUID_ContainerFormatGif)
+        || FAILED(decoder->GetFrameCount(&count)) || !count || (container != GUID_ContainerFormatGif && count != 1)
         || FAILED(decoder->GetFrame(0, &frame)) || FAILED(frame->GetSize(&width, &height))
         || !width || !height || width > ImageProvider::MaxDimension || height > ImageProvider::MaxDimension
         || static_cast<std::uint64_t>(width) * height > ImageProvider::MaxPixels) return std::nullopt;
@@ -384,6 +385,7 @@ struct ImageProvider::Impl {
     using Clock = image_detail::Clock;
     struct Entry {
         std::optional<std::filesystem::path> path;
+        std::shared_ptr<GifAnimation const> animation;
         Clock::time_point retryAt{};
         Clock::time_point lastUse{Clock::now()};
         bool pending{};
@@ -396,6 +398,7 @@ struct ImageProvider::Impl {
     std::condition_variable condition;
     std::atomic_bool stopping{true};
     bool started{};
+    bool visible{};
     std::filesystem::path directory;
     std::array<std::filesystem::path, 2> defaults;
     std::unordered_map<std::string, Entry> entries;
@@ -410,6 +413,7 @@ struct ImageProvider::Impl {
         std::lock_guard lock(mutex);
         started = false;
         queue.clear();
+        for(auto& [key,entry]:entries)entry.animation.reset();
         for (auto& [key, entry] : entries) { entry.pending = false; entry.retryAt = {}; }
     }
     std::optional<std::filesystem::path> save(image_detail::Bytes const& bytes) {
@@ -468,7 +472,7 @@ struct ImageProvider::Impl {
         while (!ec && iterator != end) {
             auto const& item = *iterator;
             auto const extension = item.path().extension();
-            if ((extension == ".png" || extension == ".ref") && image_detail::validHash(item.path().stem().string())
+            if ((extension == ".png" || extension == ".ref" || extension == ".gif" || extension == ".gref") && image_detail::validHash(item.path().stem().string())
                 && item.is_regular_file(ec)) {
                 auto const size = item.file_size(ec);
                 auto const time = item.last_write_time(ec);
@@ -514,29 +518,55 @@ struct ImageProvider::Impl {
             auto const deadline = Clock::now() + image_detail::RequestTimeout;
             std::optional<std::filesystem::path> result;
             bool success{};
+            std::shared_ptr<GifAnimation const> animated;
+            std::optional<image_detail::Bytes> originalGif;
+            {
+                std::lock_guard diskLock(diskMutex);
+                auto ref=image_detail::readBounded(directory/(image_detail::sha256(job.key)+".gref"),64);
+                if(ref){std::string hash(ref->begin(),ref->end());if(image_detail::validHash(hash)){
+                    originalGif=image_detail::readBounded(directory/(hash+".gif"),MaxDownloadBytes);
+                    if(originalGif&&image_detail::sha256(*originalGif)!=hash)originalGif.reset();
+                }}
+            }
+            if(originalGif){std::string error;animated=decodeGif(factory.Get(),*originalGif,job.banner,deadline,error);}
             {
                 std::lock_guard diskLock(diskMutex);
                 auto const previous = cached(job.key);
                 result = previous.path;
-                success = previous.fresh;
+                success = previous.fresh && (!originalGif || bool(animated));
             }
             // Make a disk hit visible before a possibly slow network refresh.
             if (result) {
                 std::lock_guard lock(mutex);
                 auto found=entries.find(job.key);
-                if(found!=entries.end())found->second.path=result;
+                if(found!=entries.end()){found->second.path=result;if(animated&&visible)found->second.animation=animated;}
             }
             if (!success && !stopping.load()) {
                 std::optional<image_detail::Bytes> bytes = job.reference.type == "url"
                     ? image_detail::download(job.reference.value, deadline, stopping)
                     : image_detail::decodeInline(job.reference.value);
                 if (bytes && (job.reference.type == "url" || image_detail::pngSignature(*bytes))) {
+                    if(isGif(*bytes)){
+                        if(!originalGif||*originalGif!=*bytes||!animated){std::string error;auto candidate=decodeGif(factory.Get(),*bytes,job.banner,deadline,error);if(candidate)animated=std::move(candidate);}
+                        std::lock_guard diskLock(diskMutex);
+                        auto hash=image_detail::sha256(*bytes);
+                        if(!hash.empty()&&image_detail::atomicWrite(directory/(hash+".gif"),*bytes)){
+                            auto refHash=image_detail::sha256(job.key);
+                            image_detail::atomicWrite(directory/(refHash+".gref"),std::span{reinterpret_cast<unsigned char const*>(hash.data()),hash.size()});
+                        }
+                    }else animated.reset();
                     auto normalized = image_detail::normalize(factory.Get(), *bytes, job.banner, deadline);
                     if (normalized && !stopping.load() && Clock::now() < deadline) {
                         std::lock_guard diskLock(diskMutex);
                         if (auto path = save(*normalized)) {
                             result = std::move(path);
                             success = saveReference(job.key, *result);
+                            // A URL can change from GIF to PNG/JPEG. Invalidate the old
+                            // animation mapping only after the new static image is cached.
+                            if (success && !isGif(*bytes)) {
+                                auto const keyHash = image_detail::sha256(job.key);
+                                image_detail::atomicWrite(directory / (keyHash + ".gref"), std::span<unsigned char const>{});
+                            }
                         }
                     }
                 }
@@ -546,6 +576,7 @@ struct ImageProvider::Impl {
                 auto const found = entries.find(job.key);
                 if (found != entries.end()) {
                     if (result) found->second.path = result;
+                    if (visible && (success || animated)) found->second.animation = std::move(animated);
                     found->second.pending = false;
                     found->second.retryAt = Clock::now() + image_detail::RetryDelay;
                 }
@@ -560,6 +591,10 @@ struct ImageProvider::Impl {
 
 ImageProvider::ImageProvider() : mImpl(std::make_unique<Impl>()) {}
 ImageProvider::~ImageProvider() { stop(); }
+void ImageProvider::tick(bool visible){
+    std::lock_guard lock(mImpl->mutex);mImpl->visible=visible;auto now=image_detail::Clock::now();
+    for(auto& [key,e]:mImpl->entries)if(!visible||(!e.pending&&now-e.lastUse>std::chrono::seconds(3))){if(e.animation){e.animation.reset();e.retryAt={};}}
+}
 ImageProvider& ImageProvider::getInstance() { static ImageProvider provider; return provider; }
 
 void ImageProvider::initialize(std::filesystem::path const& cacheDir) {
@@ -617,6 +652,7 @@ void ImageProvider::request(ImageReference const& reference, bool banner) {
     if (!mImpl->started || mImpl->stopping.load()) return;
     auto found = mImpl->entries.find(key);
     auto const now = image_detail::Clock::now();
+    for(auto& [k,e]:mImpl->entries)if(!e.pending && now-e.lastUse>std::chrono::seconds(15))e.animation.reset();
     if (found == mImpl->entries.end()) {
         if (mImpl->entries.size() >= image_detail::MaxEntries) {
             auto victim = mImpl->entries.end();
@@ -645,6 +681,11 @@ std::optional<std::filesystem::path> ImageProvider::get(ImageReference const& re
     found->second.lastUse = image_detail::Clock::now();
     mImpl->access[*found->second.path] = found->second.lastUse;
     return found->second.path;
+}
+std::shared_ptr<GifAnimation const> ImageProvider::animation(ImageReference const& ref,bool banner) const {
+    std::lock_guard lock(mImpl->mutex);
+    auto found=mImpl->entries.find(image_detail::referenceKey(ref,banner));
+    return found==mImpl->entries.end()?nullptr:found->second.animation;
 }
 std::filesystem::path ImageProvider::builtinPath(bool banner) const {
     std::lock_guard lock(mImpl->mutex);

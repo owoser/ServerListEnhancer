@@ -28,14 +28,14 @@ struct ServerStatusTestAccess {
   std::atomic<int> calls{};
   auto ready=[](ServerStatus& s,std::string const& key){auto end=Clock::now()+std::chrono::seconds(3);do{auto r=s.get(key);if(r&&(r->state==ServerStatusState::Ready||r->state==ServerStatusState::Failed))return r;std::this_thread::sleep_for(std::chrono::milliseconds(2));}while(Clock::now()<end);return std::optional<ServerStatusResult>{};};
   {ServerStatus saved;saved.setCachePath(cache);saved.mQuery=[&](auto const&,int,auto,std::stop_token){++calls;return parseStatus(R"({"name":"cached","server_list_enhancer":{"schemaVersion":1,"introText":"persisted"}})");};
-   saved.start();saved.request("persistent","host",19132);assert(ready(saved,"persistent"));
-   saved.request("persistent","host",19132);assert(saved.get("persistent")->state==ServerStatusState::Ready&&calls==1);
-   saved.request("persistent","host",19132,true);assert(ready(saved,"persistent")&&calls==2);saved.stop();}
+   saved.start();saved.request("persistent","host.example",19132);assert(ready(saved,"persistent"));
+   saved.request("persistent","host.example",19132);assert(saved.get("persistent")->state==ServerStatusState::Ready&&calls==1);
+   saved.request("persistent","host.example",19132,true);assert(ready(saved,"persistent")&&calls==2);saved.stop();}
   {ServerStatus restored;restored.setCachePath(cache);restored.mQuery=[](auto const&,int,auto,std::stop_token){ServerStatusResult r;r.error="offline";return r;};
    restored.start();auto cached=restored.get("persistent");assert(cached&&cached->visual&&cached->visual->introText=="persisted");
-   restored.request("persistent","host",19132);auto offline=ready(restored,"persistent");assert(offline&&!offline->ok&&offline->visual&&offline->name=="cached");
+   restored.request("persistent","host.example",19132);auto offline=ready(restored,"persistent");assert(offline&&!offline->ok&&offline->visual&&offline->name=="cached");
    restored.stop();restored.mQuery=[](auto const&,int,auto,std::stop_token){return parseStatus(R"({"name":"ok","server_list_enhancer":{"schemaVersion":1,"enabled":false}})");};
-   restored.start();restored.request("persistent","host",19132,true);auto revoked=ready(restored,"persistent");assert(revoked&&revoked->ok&&!revoked->visual);restored.stop();}
+   restored.start();restored.request("persistent","host.example",19132,true);auto revoked=ready(restored,"persistent");assert(revoked&&revoked->ok&&!revoked->visual);restored.stop();}
   ServerStatus live;live.start({.allowSelfSignedNetherNet=true});live.request("live","127.0.0.1",19132);
   auto deadline=Clock::now()+std::chrono::seconds(8);std::optional<ServerStatusResult> result;
   do{result=live.get("live");if(result&&(result->state==ServerStatusState::Ready||result->state==ServerStatusState::Failed))break;std::this_thread::sleep_for(std::chrono::milliseconds(10));}while(Clock::now()<deadline);

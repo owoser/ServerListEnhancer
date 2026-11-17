@@ -17,6 +17,7 @@ using nlohmann::json;
 json toJson(ServerConfig const& cfg) {
     json j;
     j["version"]       = cfg.version;
+    j["udpProbePort"] = cfg.udpProbePort;
     j["enabled"]       = cfg.enabled;
     j["logLevel"]      = cfg.logLevel;
     j["serverId"]      = cfg.visual.serverId;
@@ -45,6 +46,8 @@ void applyJson(json const& j, ServerConfig& cfg) {
     if (auto it = j.find("logLevel"); it != j.end() && it->is_number_integer()) {
         cfg.logLevel = it->get<int>();
     }
+    cfg.udpProbePort=0;
+    if(auto it=j.find("udpProbePort");it!=j.end()&&it->is_number_integer()){auto port=it->get<int>();if(port>=1024&&port<=65535&&port!=19132&&port!=19133)cfg.udpProbePort=port;}
     readString("serverId", cfg.visual.serverId);
     readString("logoId", cfg.visual.logoId);
     readString("logoUrl", cfg.visual.logoUrl);

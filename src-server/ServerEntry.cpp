@@ -8,6 +8,7 @@
 #include "common/VisualSpec.h"
 #include "ServerConfig.h"
 #include "JoinInfoExtension.h"
+#include "UdpEcho.h"
 
 #include "ll/api/command/Command.h"
 #include "ll/api/command/CommandHandle.h"
@@ -83,6 +84,7 @@ void registerCommand() {
             switch (param.action) {
             case AdminAction::reload:
                 if (ConfigManager::getInstance().reload()) {
+                    startUdpEcho(ConfigManager::getInstance().get().udpProbePort);
                     refreshJoinInfoSnapshot();
                     output.success("配置已重新加载，HTTP视觉快照已发布");
                     sendToAll();
@@ -135,6 +137,7 @@ bool ServerEntry::load() {
 
 bool ServerEntry::enable() {
     if (!installJoinInfoExtension()) return false;
+    if(!startUdpEcho(ConfigManager::getInstance().get().udpProbePort))getSelf().getLogger().warn("UDP探测端口未启用，请检查配置/端口占用");
     setJoinInfoEnabled(true);
     if (!mListener) {
         mListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::PlayerJoinEvent>(onPlayerJoin);
@@ -145,6 +148,7 @@ bool ServerEntry::enable() {
 }
 
 bool ServerEntry::disable() {
+    stopUdpEcho();
     uninstallJoinInfoExtension();
     if (mListener) {
         ll::event::EventBus::getInstance().removeListener(mListener);

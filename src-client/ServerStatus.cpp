@@ -1,4 +1,5 @@
 #include "ServerStatus.h"
+#include "AddressParser.h"
 
 #include <algorithm>
 #include <array>
@@ -49,11 +50,8 @@ std::wstring widen(std::string const& text) {
     return result;
 }
 
-bool validEndpoint(std::string const& address, int port) {
-    return !address.empty() && address.size() <= 1024 && port > 0 && port <= 65535
-        && std::none_of(address.begin(), address.end(), [](unsigned char c) {
-               return c <= 32 || c == 127 || c == '/' || c == '\\' || c == '?' || c == '#' || c == '@';
-           });
+bool validEndpoint(std::string const& address,int port){
+    return validServerEndpoint(address,port);
 }
 
 // Validate BEFORE appending, including chunked responses without Content-Length.
@@ -324,6 +322,7 @@ std::optional<DiscoveryVisual> parseVisual(json const& extension) {
     visual.revision = stringField(extension, "revision", 64);
     visual.serverId = stringField(extension, "serverId", 64);
     visual.introText = stringField(extension, "introText", 1024);
+    if(auto probe=extension.find("udpProbe");probe!=extension.end()&&probe->is_object()&&stringField(*probe,"protocol")=="sle-echo-v1"){int port=intField(*probe,"port",0);if(port>=1024&&port<=65535)visual.udpProbePort=port;}
     visual.logo = parseImage(extension, "logo");
     visual.introImage = parseImage(extension, "introImage");
     visual.cacheTtlSeconds = std::clamp(intField(extension, "cacheTtlSeconds", 300), 1, 86400);
@@ -334,6 +333,7 @@ json visualJson(DiscoveryVisual const& visual) {
     return {{"schemaVersion", 1}, {"enabled", visual.enabled}, {"revision", visual.revision},
         {"serverId", visual.serverId}, {"introText", visual.introText},
         {"cacheTtlSeconds", visual.cacheTtlSeconds},
+        {"udpProbe", {{"protocol","sle-echo-v1"},{"port",visual.udpProbePort}}},
         {"logo", {{"type", visual.logo.type}, {"value", visual.logo.value}}},
         {"introImage", {{"type", visual.introImage.type}, {"value", visual.introImage.value}}}};
 }

@@ -5,6 +5,7 @@
 #include "JoinInfoExtension.h"
 #include "JoinInfoPayload.h"
 #include "ServerConfig.h"
+#include "UdpEcho.h"
 #include "ll/api/io/Logger.h"
 #include "ll/api/memory/Hook.h"
 #include "ll/api/mod/NativeMod.h"
@@ -88,6 +89,8 @@ bool installJoinInfoExtension(){
 }
 void refreshJoinInfoSnapshot(){
     auto payload=join_info::buildPayload(ConfigManager::getInstance().get(),state().enabled.load());
+    if(udpEchoPort())payload["udpProbe"]={{"protocol","sle-echo-v1"},{"port",udpEchoPort()}};
+    payload["revision"]=join_info::revisionOf(payload.dump());
     auto revision=payload["revision"].get<std::string>();
     state().snapshots.publish(std::move(payload));
     logger().info("[join-info] Snapshot published: {}",revision);

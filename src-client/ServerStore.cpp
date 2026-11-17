@@ -1,4 +1,5 @@
 #include "ServerStore.h"
+#include "AddressParser.h"
 
 #include <algorithm>
 #include <chrono>
@@ -172,6 +173,7 @@ std::optional<SavedServer> ServerStore::get(std::string const& id) const {
 }
 
 std::string ServerStore::upsert(SavedServer server) {
+    if(!validServerEndpoint(server.address,server.port))return {};
     std::lock_guard lock(mMutex);
     if (server.id.empty()) {
         server.id = newId();

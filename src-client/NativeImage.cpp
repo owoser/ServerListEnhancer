@@ -12,6 +12,16 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <vector>
+#include <cstring>
+#include <mutex>
+#include "ClientEntry.h"
+#include "ll/api/io/Logger.h"
+#include "ll/api/service/TargetedBedrock.h"
+#include "mc/client/game/ClientInstance.h"
+#include "mc/client/renderer/TextureGroup.h"
+#include "mc/deps/core/image/Image.h"
+#include "mc/deps/core_graphics/ImageBuffer.h"
 
 namespace sle::client {
 
@@ -61,4 +71,73 @@ bool drawNativeImage(
     return true;
 }
 
+namespace {
+using Clock=std::chrono::steady_clock;
+struct AnimationTexture {
+ std::shared_ptr<GifAnimation const> animation;
+ std::shared_ptr<mce::TextureGroup> group;
+ std::string path;
+ Clock::time_point last{Clock::now()};
+ Clock::duration elapsed{};
+ std::size_t frame{~std::size_t{}};
+ unsigned updates{};
+ bool seen{};
+};
+std::mutex textureMutex;
+std::vector<AnimationTexture> textures;
+std::uint64_t textureSequence{};
+}
+void beginImageFrame(){std::lock_guard lock(textureMutex);for(auto& t:textures)t.seen=false;}
+void endImageFrame(bool visible){
+ std::lock_guard lock(textureMutex);
+ auto now=Clock::now();
+ for(auto it=textures.begin();it!=textures.end();){
+  if(!visible||(!it->seen&&now-it->last>std::chrono::seconds(2))){
+   if(it->group)it->group->unloadTexture(ResourceLocation{Core::PathView{it->path},ResourceFileSystem::Raw},false);
+   auto path=it->path;
+   it=textures.erase(it);
+   ClientEntry::getInstance().getSelf().getLogger().info("[GIF] released texture={}, remaining={}, cpuBytes={}",path,textures.size(),gifMemoryBytes());
+  }else ++it;
+ }
+}
+bool drawAnimatedImage(MinecraftUIRenderContext& ctx,vanilla::Rect rect,std::shared_ptr<GifAnimation const> const& animation,bool contain){
+ if(!animation||animation->frames.empty())return false;
+ std::lock_guard lock(textureMutex);
+ auto now=Clock::now();
+ auto it=std::find_if(textures.begin(),textures.end(),[&](auto const& t){return t.animation==animation;});
+ if(it==textures.end()){
+  std::size_t textureBytes{};for(auto const& t:textures)textureBytes+=std::size_t(t.animation->width)*t.animation->height*4;
+  if(textures.size()>=8||textureBytes+std::size_t(animation->width)*animation->height*4>32u*1024*1024)return false;
+  auto ci=ll::service::bedrock::getClientInstance();if(!ci)return false;
+  auto group=ci->getTextureGroup();if(!group)return false;
+  AnimationTexture t;t.animation=animation;t.group=std::move(group);
+  t.path="sle_animation_"+std::to_string(++textureSequence);textures.push_back(std::move(t));it=std::prev(textures.end());
+  ClientEntry::getInstance().getSelf().getLogger().info("[GIF] texture={}, {}x{}, frames={}, live={}, cpuBytes={}",it->path,animation->width,animation->height,animation->frames.size(),textures.size(),gifMemoryBytes());
+ }
+ auto& t=*it;
+ auto delta=now-t.last;
+ // A long absence is a pause, not a request to catch up through invisible frames.
+ if(delta<std::chrono::milliseconds(250))t.elapsed+=delta;
+ t.last=now;t.seen=true;
+ auto frame=animation->frameAt(std::chrono::duration_cast<std::chrono::milliseconds>(t.elapsed));
+ ResourceLocation location{Core::PathView{t.path},ResourceFileSystem::Raw};
+ if(frame!=t.frame){
+  mce::Image image(animation->width,animation->height,mce::ImageFormat::RGBA8Unorm,mce::ImageUsage::SRGB);
+  image.mAlphaUsage=mce::AlphaUsage::Transparent;
+  image.resizeImageBytesToFitImageDescription();
+  auto const& pixels=animation->frames[frame];
+  if(image.mImageBytes.size()!=pixels.size())return false;
+  std::memcpy(image.mImageBytes.data(),pixels.data(),pixels.size());
+  cg::ImageBuffer buffer(std::move(image));
+  if(t.frame==~std::size_t{})t.group->uploadTexture(location,std::move(buffer));
+  else if(!t.group->updateTextureInPlace(location,std::move(buffer)))return false;
+  t.frame=frame;
+  if(++t.updates==3)ClientEntry::getInstance().getSelf().getLogger().info("[GIF] playback confirmed texture={}, frame={}, uploads={}",t.path,frame,t.updates);
+ }
+ auto handle=ctx.getTexture(location,false);auto const& texture=handle.mClientTexture.get();if(!texture)return false;
+ if(contain){auto scale=std::min(rect.width()/animation->width,rect.height()/animation->height);auto w=scale*animation->width,h=scale*animation->height;rect.x0+=(rect.width()-w)/2;rect.y0+=(rect.height()-h)/2;rect.x1=rect.x0+w;rect.y1=rect.y0+h;}
+ static HashedString material("ui_textured_and_color");mce::Color white{1.f,1.f,1.f,1.f};
+ ctx.flushImages(white,1.f,material);ctx.drawImage(texture->mClientTexture.get(),{rect.x0,rect.y0},{rect.width(),rect.height()},{0,0},{1,1},false);ctx.flushImages(white,1.f,material);
+ return true;
+}
 } // namespace sle::client

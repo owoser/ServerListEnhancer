@@ -13,6 +13,7 @@ struct DiscoveryVisual {
     std::string introText;
     ImageReference logo;
     ImageReference introImage;
+    int udpProbePort{};
     int cacheTtlSeconds{300};
     bool enabled{true};
     bool operator==(DiscoveryVisual const&) const = default;

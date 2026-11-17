@@ -6,6 +6,7 @@
 
 #include "ProbeOverlay.h"
 #include "ImageProvider.h"
+#include "LatencyProbe.h"
 #include "ServerStatus.h"
 #include "common/Endpoint.h"
 #include "ServerStore.h"
@@ -71,6 +72,7 @@ bool ClientEntry::load() {
 
 bool ClientEntry::enable() {
     ImageProvider::getInstance().start();
+    LatencyProbe::getInstance().start();
     // Legacy NetherNet status metadata only; image downloads always validate TLS.
     ServerStatus::getInstance().start({.allowSelfSignedNetherNet=true, .allowPlainHttpFallback=true});
     for (auto const& s : ServerStore::getInstance().list())
@@ -118,6 +120,7 @@ bool ClientEntry::disable() {
     unregisterProbeOverlay();
     ServerStatus::getInstance().stop();
     ImageProvider::getInstance().stop();
+    LatencyProbe::getInstance().stop();
     VisualCache::getInstance().save();
     return true;
 }

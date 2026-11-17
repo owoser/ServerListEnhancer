@@ -15,3 +15,5 @@ dist/
 *.user
 *.suo
 Thumbs.db
+# Local reference repositories (not required for builds)
+/third_party/

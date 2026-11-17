@@ -13,6 +13,7 @@ struct ServerConfig {
     bool        enabled  = true;   // 总开关：false 时不下发任何视觉档案
     VisualSpec  visual;            // 下发给客户端的档案
     std::string logoData;          // HTTP-only PNG data URI; never changes the binary VisualSpec protocol
+    int         udpProbePort = 0; // opt-in separate UDP echo, 0 disabled
     int         logLevel = 4;      // 0 Trace / 1 Debug / 2 Info / 3 Warn / 4 Error
 };
 

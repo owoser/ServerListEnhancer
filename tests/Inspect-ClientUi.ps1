@@ -15,6 +15,9 @@ public static class UiProbeNative {
  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd,int command);
  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hwnd);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint processId);
+ [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+ [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a,uint b,bool attach);
  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr e);
  [DllImport("user32.dll")] public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
@@ -27,9 +30,15 @@ if($h -eq 0){throw 'Client has no window'}
 [UiProbeNative]::keybd_event(18,0,0,[UIntPtr]::Zero)
 [UiProbeNative]::keybd_event(18,0,2,[UIntPtr]::Zero)
 [UiProbeNative]::BringWindowToTop($h) | Out-Null
-[UiProbeNative]::SetForegroundWindow($h) | Out-Null
+$foreground=[UiProbeNative]::GetForegroundWindow(); [uint32]$owner=0
+$thread=[UiProbeNative]::GetWindowThreadProcessId($foreground,[ref]$owner)
+$current=[UiProbeNative]::GetCurrentThreadId()
+$attached=[UiProbeNative]::AttachThreadInput($current,$thread,$true)
+try {[UiProbeNative]::SetForegroundWindow($h) | Out-Null} finally {if($attached){[UiProbeNative]::AttachThreadInput($current,$thread,$false) | Out-Null}}
 Start-Sleep -Milliseconds 350
-if([UiProbeNative]::GetForegroundWindow() -ne $h){throw "Client did not receive foreground; refuse desktop screenshot/input"}
+$foreground=[UiProbeNative]::GetForegroundWindow(); [uint32]$foregroundPid=0
+[UiProbeNative]::GetWindowThreadProcessId($foreground,[ref]$foregroundPid) | Out-Null
+if($foregroundPid -ne $p.Id){throw "Client did not receive foreground (target=$h actual=$foreground pid=$foregroundPid expected=$($p.Id)); refuse desktop screenshot/input"}
 $r=New-Object UiProbeNative+Rect
 $pt=New-Object UiProbeNative+Point
 [UiProbeNative]::GetClientRect($h,[ref]$r) | Out-Null
@@ -56,6 +65,28 @@ if($Action -eq 'paste'){
  [UiProbeNative]::keybd_event(86,0,2,[UIntPtr]::Zero)
  [UiProbeNative]::keybd_event(17,0,2,[UIntPtr]::Zero)
  Start-Sleep -Milliseconds 150
+ if($null -ne $oldClipboard){Set-Clipboard -Value $oldClipboard}
+}
+if($Action -eq 'alt-a'){
+ [UiProbeNative]::keybd_event(18,0,0,[UIntPtr]::Zero)
+ [UiProbeNative]::keybd_event(65,0,0,[UIntPtr]::Zero)
+ Start-Sleep -Milliseconds 150
+ [UiProbeNative]::keybd_event(65,0,2,[UIntPtr]::Zero)
+ [UiProbeNative]::keybd_event(18,0,2,[UIntPtr]::Zero)
+}
+if($Action -eq 'readfield'){
+ $oldClipboard=Get-Clipboard -Raw -ErrorAction SilentlyContinue
+ [UiProbeNative]::keybd_event(17,0,0,[UIntPtr]::Zero)
+ [UiProbeNative]::keybd_event(65,0,0,[UIntPtr]::Zero)
+ Start-Sleep -Milliseconds 120
+ [UiProbeNative]::keybd_event(65,0,2,[UIntPtr]::Zero)
+ [UiProbeNative]::keybd_event(67,0,0,[UIntPtr]::Zero)
+ Start-Sleep -Milliseconds 150
+ [UiProbeNative]::keybd_event(67,0,2,[UIntPtr]::Zero)
+ [UiProbeNative]::keybd_event(17,0,2,[UIntPtr]::Zero)
+ Start-Sleep -Milliseconds 120
+ $field=Get-Clipboard -Raw
+ "FIELD=$field"
  if($null -ne $oldClipboard){Set-Clipboard -Value $oldClipboard}
 }
 if($Action -eq 'small'){

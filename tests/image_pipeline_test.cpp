@@ -42,5 +42,30 @@ int main(){
  assert(images.get(ref));images.stop();
  images.initialize("build/image-test-cache");images.start();images.request(ref);
  until=image_detail::Clock::now()+std::chrono::seconds(3);while(!images.get(ref)&&image_detail::Clock::now()<until)std::this_thread::sleep_for(std::chrono::milliseconds(2));assert(images.get(ref));images.stop();
- std::cout<<"WIC PNG decode/encode, builtin release, bad base64, URL policy: PASS\n";
+ // Repeated visible/hidden cycles must release decoded GIFs, using disk only.
+ std::ifstream gifStream("build/gif-fixtures/banner.gif",std::ios::binary);
+ image_detail::Bytes gifBytes{std::istreambuf_iterator<char>(gifStream),{}};assert(!gifBytes.empty());
+ sle::ImageReference gifRef{"url","https://example.com/cached-banner.gif"};
+ auto dir=images.builtinPath().parent_path();auto hash=image_detail::sha256(gifBytes);
+ auto keyHash=image_detail::sha256(image_detail::referenceKey(gifRef,true));
+ auto putText=[&](auto const& p,std::string const& s){assert(image_detail::atomicWrite(p,std::span{reinterpret_cast<unsigned char const*>(s.data()),s.size()}));};
+ assert(image_detail::atomicWrite(dir/(hash+".gif"),gifBytes));putText(dir/(keyHash+".gref"),hash);
+ putText(dir/(keyHash+".ref"),images.builtinPath(true).stem().string());
+ images.start();
+ for(int cycle=0;cycle<10;++cycle){images.tick(true);images.request(gifRef,true);
+  auto end=image_detail::Clock::now()+std::chrono::seconds(3);
+  while(!images.animation(gifRef,true)&&image_detail::Clock::now()<end)std::this_thread::yield();
+  assert(images.animation(gifRef,true));images.tick(false);
+  end=image_detail::Clock::now()+std::chrono::seconds(3);
+  while(gifMemoryBytes()&&image_detail::Clock::now()<end)std::this_thread::yield();
+  assert(!images.animation(gifRef,true)&&gifMemoryBytes()==0);
+ }
+ images.stop();assert(gifMemoryBytes()==0);
+ // A successfully cached static replacement invalidates the old GIF mapping.
+ assert(image_detail::atomicWrite(dir/(keyHash+".gref"),std::span<unsigned char const>{}));
+ images.initialize("build/image-test-cache");images.start();images.tick(true);images.request(gifRef,true);
+ until=image_detail::Clock::now()+std::chrono::seconds(3);
+ while(!images.get(gifRef,true)&&image_detail::Clock::now()<until)std::this_thread::yield();
+ assert(images.get(gifRef,true));images.stop();assert(!images.animation(gifRef,true)&&gifMemoryBytes()==0);
+ std::cout<<"WIC PNG/JPEG bounds, inline/URL safety, ten cached GIF open/close cycles return CPU memory to zero: PASS\n";
 }

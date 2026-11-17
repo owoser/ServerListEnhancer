@@ -2,6 +2,7 @@
 
 #include "VanillaUi.h"
 #include <filesystem>
+#include "GifAnimation.h"
 
 class MinecraftUIRenderContext;
 
@@ -15,4 +16,7 @@ namespace sle::client {
     bool contain = true
 );
 
+void beginImageFrame();
+void endImageFrame(bool visible);
+bool drawAnimatedImage(MinecraftUIRenderContext&,vanilla::Rect,std::shared_ptr<GifAnimation const> const&,bool contain=true);
 } // namespace sle::client

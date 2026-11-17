@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/DiscoveryVisual.h"
+#include "GifAnimation.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -17,9 +18,11 @@ public:
     void initialize(std::filesystem::path const& cacheDir);
     void start();
     void stop();
+    void tick(bool visible);
     void request(ImageReference const& reference, bool banner = false);
     [[nodiscard]] std::optional<std::filesystem::path> get(ImageReference const& reference, bool banner = false) const;
     [[nodiscard]] std::filesystem::path builtinPath(bool banner = false) const;
+    [[nodiscard]] std::shared_ptr<GifAnimation const> animation(ImageReference const&,bool banner=false) const;
 
     static constexpr std::size_t MaxDownloadBytes = 2 * 1024 * 1024;
     static constexpr std::size_t MaxInlineBytes = 24 * 1024;
