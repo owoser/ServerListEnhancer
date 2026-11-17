@@ -1,8 +1,8 @@
 # ServerListEnhancer（服务器列表增强）
 
-适用：Windows x64、Minecraft Bedrock 1.26.60.05、普通 LeviLamina 26.60.7。客户端和服务端 DLL 不可混用。
+Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05、普通 LeviLamina 26.60.7，客户端和服务端 DLL 不可混用。Android ARM64 版使用 LeviLauncher Android 的 Preloader SDK，构建和功能范围见 [Android 适配说明](<docs/android.md>)。
 
-## 已实现
+## Windows 版已实现
 
 - 主菜单独立服务器列表，支持添加、编辑、删除和选中查看详情；不读写原版列表。
 - 复用游戏原版按钮贴图和真实 Play 按钮几何，原生退出确认框出现时隐藏叠加层。
@@ -29,6 +29,16 @@
 见 [配置和网络说明](<docs/discovery-images.md>)：字段、内联 Logo、HTTP 响应预算、TLS 策略和回退。
 
 远程资料按实际请求的规范化 host:port 绑定，不由服务器自报 serverId 或服务器名称决定归属。编辑、删除使旧请求失效；查询失败保留旧图文，明确 enabled:false 撤销远程图文。
+
+## Android（ARM64）
+
+Android 原生包使用独立 Preloader SDK，当前绑定 LeviLauncher 1.6.0。首版入口位于世界内 HUD；主菜单入口、直连、GIF 动画和 UDP 探测尚未移植。目录、构建命令、手机导入步骤和与 Windows 的功能差异见 [Android 适配说明](<docs/android.md>)。
+
+```powershell
+./scripts/package-android.ps1
+```
+
+最终产物位于 `dist/android/`；使用 Android 版 LeviLauncher 导入 `.levipack`，不要使用 Windows DLL。
 
 ## 构建
 

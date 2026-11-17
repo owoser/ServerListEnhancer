@@ -1,0 +1,9 @@
+{
+  "type": "preload-native",
+  "name": "@MOD_NAME@",
+  "author": "@MOD_AUTHOR@",
+  "version": "@MOD_VERSION@",
+  "entry": "libserver_list_enhancer.so",
+  "icon": "resources/logo.png",
+  "minecraft_versions": ["1.26.60*", "1.26.62*"]
+}
