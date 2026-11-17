@@ -101,7 +101,7 @@ std::string codepoint(unsigned n) {
 }
 class AndroidMod {
     struct Hit {float x,y,w,h;int action;std::string id;bool contains(float a,float b)const{return a>=x&&b>=y&&a<x+w&&b<y+h;}};
-    struct Task {SavedServer server;std::uint64_t generation;};
+    struct Task {SavedServer server;std::uint64_t generation;bool imagesOnly{false};};
     std::mutex mutex;
     std::condition_variable changed;
     std::deque<Task> tasks;
@@ -336,14 +336,17 @@ class AndroidMod {
         {std::lock_guard lock(mutex);
         if(!moduleEnabled||!state.ready||!state.home||state.blocked){submitHomeUiFrame(0,{},state.session);return;}
         open=true;form=confirm=false;pressed=-1;hits.clear();}
-        refresh();
+        // 打开列表不再自动查询全部服务器：资料查询只由刷新按钮/保存后的完整查询发起。
     }
 
-    void enqueue(const SavedServer& s) {
+    // imagesOnly 只做“选中即出图”：不查 /v1/join、不写 statuses、不置 pending。
+    void enqueue(const SavedServer& s,bool imagesOnly=false) {
         if(!client::validServerEndpoint(s.address,s.port))return;
         std::erase_if(tasks,[&](const auto& task){return task.server.id==s.id;});
-        bindEndpoint(statuses[s.id],endpointKey(s.address,s.port));
-        tasks.push_back({s,++generations[s.id]});statuses[s.id].pending=true;changed.notify_one();
+        if(!imagesOnly)bindEndpoint(statuses[s.id],endpointKey(s.address,s.port));
+        tasks.push_back({s,++generations[s.id],imagesOnly});
+        if(!imagesOnly)statuses[s.id].pending=true;
+        changed.notify_one();
     }
     void refresh() {for(const auto& s:ServerStore::getInstance().list())enqueue(s);}
     bool current(const Task& task) {
@@ -392,14 +395,16 @@ class AndroidMod {
             {std::unique_lock lock(mutex);changed.wait(lock,[&]{return !active.load()||!tasks.empty();});if(!active.load())break;task=tasks.front();tasks.pop_front();status=statuses[task.server.id];}
             const auto& server=task.server;auto key=endpointKey(server.address,server.port);auto cached=readBytes(cache/(cacheName(key)+".json"),MaxJsonBytes);
             if(!cached.empty())parseDiscovery(std::string_view(reinterpret_cast<const char*>(cached.data()),cached.size()),status);
-            const auto authority=client::displayAddress(server.address,server.port);auto response=download("https://"+authority+"/v1/join",MaxJsonBytes,2000,&active);
-            if(!response&&plainHttp&&active.load())response=download("http://"+authority+"/v1/join",MaxJsonBytes,2000,&active);
-            if(!active.load())break;
-            if(response&&parseDiscovery(std::string_view(reinterpret_cast<const char*>(response.data.data()),response.data.size()),status)){saveBytes(cache/(cacheName(key)+".json"),response.data);pruneCache();}
-            else status.error=response.error.empty()?"服务器资料格式无效":response.error;
-            status.pending=false;
+            if(!task.imagesOnly) {
+                const auto authority=client::displayAddress(server.address,server.port);auto response=download("https://"+authority+"/v1/join",MaxJsonBytes,2000,&active);
+                if(!response&&plainHttp&&active.load())response=download("http://"+authority+"/v1/join",MaxJsonBytes,2000,&active);
+                if(!active.load())break;
+                if(response&&parseDiscovery(std::string_view(reinterpret_cast<const char*>(response.data.data()),response.data.size()),status)){saveBytes(cache/(cacheName(key)+".json"),response.data);pruneCache();}
+                else status.error=response.error.empty()?"服务器资料格式无效":response.error;
+                status.pending=false;
+            }
             bool selectedNow{},visible{};
-            {std::lock_guard lock(mutex);if(!current(task))continue;statuses[server.id]=status;selectedNow=selected==server.id;visible=open;}
+            {std::lock_guard lock(mutex);if(!current(task))continue;if(!task.imagesOnly)statuses[server.id]=status;selectedNow=selected==server.id;visible=open;}
             ImageReference logo,banner;if(status.visual){logo=status.visual->logo;banner=status.visual->introImage;}
             if(!server.logoUrl.empty())logo={"url",server.logoUrl};if(!server.introImageUrl.empty())banner={"url",server.introImageUrl};
             // 行图标只认这台服务器自己的图；选中项的详情横幅才需要单独解码。
@@ -438,7 +443,7 @@ class AndroidMod {
                 }
             }
             // 探测结束后为这一行触发一次 UDP 时延查询；结果缓存 15 秒，翻页或关闭列表时 pause。
-            if(visible&&active.load()&&client::validServerEndpoint(server.address,server.port)){
+            if(!task.imagesOnly&&visible&&active.load()&&client::validServerEndpoint(server.address,server.port)){
                 // 端口优先级与 Windows 一致：服务器 /v1/join 通告的探测端口优先，其次配置里的默认值。
                 int echoPort=udpProbePort;if(status.visual&&status.visual->udpProbePort>0)echoPort=status.visual->udpProbePort;
                 latencyProbe.request(endpointKey(server.address,server.port),server.address,server.port,echoPort);
@@ -467,7 +472,7 @@ class AndroidMod {
         case 3:dismiss();break;
         case 4:if(page>0)--page;latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
         case 5:++page;latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
-        case 6:selected=hit.id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);if(auto s=ServerStore::getInstance().get(selected))enqueue(*s);break;
+        case 6:selected=hit.id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);if(auto s=ServerStore::getInstance().get(selected))enqueue(*s,true);break;
         case 7:save();break;
         case 8:form=false;confirm=false;pl::input::hideKeyboard();break;
         case 9:confirm=true;pl::input::hideKeyboard();break;
