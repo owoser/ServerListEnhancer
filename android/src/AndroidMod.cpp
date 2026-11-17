@@ -1,6 +1,7 @@
 #include "AndroidPlatform.h"
 #include "Config.h"
 #include "Discovery.h"
+#include "GifAnimation.h"
 #include "HomeUi.h"
 #include "ServerStore.h"
 #include "TextEdit.h"
@@ -11,6 +12,7 @@
 #include <pl/Input.hpp>
 #include <android/log.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <dlfcn.h>
@@ -77,13 +79,68 @@ class AndroidMod {
     client::TextEdit nameEdit,addressEdit;
     std::filesystem::path cache,modRoot;
     JavaVM* javaVm{};
+    struct Animation {
+        std::vector<std::string> ids;
+        std::vector<int> delays;
+        int width{},height{},plays{};
+        std::int64_t started{};
+        bool ready{};
+    };
+    Animation logoAnimation,bannerAnimation;
+
+    static std::int64_t steadyMillis() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    // 动态 GIF：按已播放时间返回当前应提交的帧图片 id；没有动画时返回空串。
+    std::string animationId(const Animation& state) const {
+        if(!state.ready||state.ids.empty())return {};
+        if(state.ids.size()==1||state.delays.size()!=state.ids.size())return state.ids.front();
+        std::int64_t total{};for(int delay:state.delays)total+=delay;if(total<=0)return state.ids.front();
+        const auto elapsed=steadyMillis()-state.started;const std::int64_t time=elapsed>0?elapsed:0;
+        if(state.plays>0&&time>=total*state.plays)return state.ids.back();
+        std::int64_t remaining=time%total;
+        for(std::size_t i=0;i<state.delays.size();++i){remaining-=state.delays[i];if(remaining<0)return state.ids[i];}
+        return state.ids.back();
+    }
+    // 逐帧注册 GIF 图片（id 固定为 base+"#fN"），home 覆盖只会替换同名 Bitmap。
+    bool registerAnimation(const char* base,const GifAnimation& animation,Animation& state) {
+        std::vector<std::string> ids;ids.reserve(animation.frameCount());
+        bool ok=true;
+        for(std::size_t i=0;ok&&i<animation.frameCount();++i){
+            auto id=std::string(base)+"#f"+std::to_string(i);
+            if(!registerHomeUiImage(id,animation.frame(i),animation.width,animation.height))ok=false;
+            ids.push_back(std::move(id));
+        }
+        if(!ok){
+            static const unsigned char transparent[4]{};
+            for(const auto& id:ids)registerHomeUiImage(id,transparent,1,1);
+            return false;
+        }
+        state.ids=std::move(ids);state.delays=animation.delays;state.width=animation.width;state.height=animation.height;
+        state.plays=animation.plays;state.started=steadyMillis();state.ready=true;return true;
+    }
+    // 释放上一组帧图：用 1x1 透明图覆盖同名 id，HomeOverlay 会回收旧 Bitmap。
+    void clearAnimation(Animation& state) {
+        static const unsigned char transparent[4]{};
+        for(const auto& id:state.ids)registerHomeUiImage(id,transparent,1,1);
+        state=Animation{};
+    }
+    // 列表标题与 Windows 端一致：自定义名称 → /v1/join 返回的名称 → host:port。
+    // 旧版本会把地址写进名称，遇到与地址或端点相同的名称时当作未命名处理，避免历史数据看不了探测名称。
+    std::string displayName(const SavedServer& server,std::map<std::string,Status>::const_iterator status) const {
+        auto endpoint=endpointKey(server.address,server.port);
+        if(!server.name.empty()&&server.name!=server.address&&server.name!=endpoint)return server.name;
+        if(status!=statuses.end()&&!status->second.title.empty())return status->second.title;
+        return endpoint;
+    }
 
     bool homeAllowed() const {
         auto state=homeUiState();return state.ready&&state.home&&!state.blocked;
     }
     void dismiss() {
         bool wasOpen=open;open=form=confirm=false;pressed=-1;hits.clear();
-        if(wasOpen)pl::input::hideKeyboard();
+        // 关闭时释放逐帧 Bitmap，重新打开后由探测流程重新注册。
+        if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);pl::input::hideKeyboard();}
     }
     void openFromHome() {
         if(!active)return;auto state=homeUiState();
@@ -104,16 +161,33 @@ class AndroidMod {
         auto server=ServerStore::getInstance().get(task.server.id);
         return active&&generations[task.server.id]==task.generation&&server&&server->address==task.server.address&&server->port==task.server.port;
     }
-    Pixels image(const ImageReference& ref,bool banner) {
+    // 返回静态像素；如果内容是能播放的多帧 GIF，就把逐帧动画填进 animation 并返回空。
+    // 解码失败或超出预算时仍然走 decodeImage，即平台静态首帧。
+    Pixels image(const ImageReference& ref,bool banner,GifAnimation& animation) {
         if(ref.type=="builtin")return decodeImage(banner?client::builtin::banner():client::builtin::logo(),banner);
-        if(ref.type=="base64"&&!banner){auto bytes=decodeInlinePng(ref.value);return bytes?decodeImage(bytes.data,false):Pixels{};}
-        if(ref.type!="url")return {};
-        auto path=cache/(cacheName(ref.value)+".image");auto bytes=readBytes(path,MaxImageBytes);
-        if(!bytes.empty()){auto result=decodeImage(bytes,banner);if(result)return result;}
-        auto downloaded=download(ref.value,MaxImageBytes,4000,&active);
-        if(!downloaded)return {};
-        auto result=decodeImage(downloaded.data,banner);
-        if(result){saveBytes(path,downloaded.data);pruneCache();}return result;
+        if(ref.type!="base64"&&ref.type!="url")return {};
+        std::vector<unsigned char> bytes;std::filesystem::path path;bool store{};
+        if(ref.type=="base64"){
+            if(banner)return {};
+            auto decoded=decodeInlinePng(ref.value);if(!decoded)return {};
+            bytes=std::move(decoded.data);
+        }else{
+            path=cache/(cacheName(ref.value)+".image");bytes=readBytes(path,MaxImageBytes);
+            if(!bytes.empty()){
+                if(auto frames=decodeGifAnimation(bytes,banner);frames&&frames->frameCount()>1){animation=std::move(*frames);return {};}
+                if(auto result=decodeImage(bytes,banner))return result;
+                bytes.clear();
+            }
+            auto downloaded=download(ref.value,MaxImageBytes,4000,&active);
+            if(!downloaded)return {};bytes=std::move(downloaded.data);store=true;
+        }
+        if(auto frames=decodeGifAnimation(bytes,banner);frames&&frames->frameCount()>1){
+            if(store){saveBytes(path,bytes);pruneCache();}
+            animation=std::move(*frames);return {};
+        }
+        auto result=decodeImage(bytes,banner);
+        if(result&&store){saveBytes(path,bytes);pruneCache();}
+        return result;
     }
     void pruneCache() {
         std::lock_guard lock(cacheWriteMutex);
@@ -140,12 +214,19 @@ class AndroidMod {
             if(selectedNow) {
                 ImageReference logo,banner;if(status.visual){logo=status.visual->logo;banner=status.visual->introImage;}
                 if(!server.logoUrl.empty())logo={"url",server.logoUrl};if(!server.introImageUrl.empty())banner={"url",server.introImageUrl};
-                auto lp=image(logo,false);if(!active.load())break;auto bp=image(banner,true);if(!active.load())break;
+                GifAnimation logoFrames,bannerFrames;
+                auto lp=image(logo,false,logoFrames);if(!active.load())break;auto bp=image(banner,true,bannerFrames);if(!active.load())break;
                 std::lock_guard lock(mutex);
                 if(current(task)&&selected==server.id){
+                    clearAnimation(logoAnimation);clearAnimation(bannerAnimation);
                     logoReady=lp&&registerHomeUiImage("sle.selected.logo",lp.rgba,lp.width,lp.height);
                     bannerReady=bp&&registerHomeUiImage("sle.selected.banner",bp.rgba,bp.width,bp.height);
-                    if(logoReady){logoWidth=lp.width;logoHeight=lp.height;}if(bannerReady){bannerWidth=bp.width;bannerHeight=bp.height;}
+                    if(logoFrames.valid())logoReady=registerAnimation("sle.selected.logo",logoFrames,logoAnimation);
+                    if(bannerFrames.valid())bannerReady=registerAnimation("sle.selected.banner",bannerFrames,bannerAnimation);
+                    if(logoAnimation.ready){logoWidth=logoAnimation.width;logoHeight=logoAnimation.height;}
+                    else if(logoReady){logoWidth=lp.width;logoHeight=lp.height;}
+                    if(bannerAnimation.ready){bannerWidth=bannerAnimation.width;bannerHeight=bannerAnimation.height;}
+                    else if(bannerReady){bannerWidth=bp.width;bannerHeight=bp.height;}
                 }
             }
         }
@@ -158,9 +239,12 @@ class AndroidMod {
         auto parsed=client::parseServerAddress(address);if(!parsed){notice=parsed.error;return;}
         auto& store=ServerStore::getInstance();if(editId.empty()&&store.list().size()>=512){notice="服务器列表已达 512 条";return;}
         SavedServer s;if(auto old=store.get(editId))s=*old;
-        s.name=name.empty()?parsed.host:name;s.address=parsed.host;s.port=parsed.port;auto id=store.upsert(s);
+        // 名称留空就保持空（与 Windows 一致）：显示时再回退到探测名称或 host:port，
+        // 探测结果不会写回 servers.json，因此失败时已有名称不会被改掉。
+        s.name=name;s.address=parsed.host;s.port=parsed.port;auto id=store.upsert(s);
         if(id.empty()||!store.save()){notice="保存失败，请检查存储空间";return;}
-        selected=id;logoReady=bannerReady=false;form=false;notice="已保存";pl::input::hideKeyboard();enqueue(*store.get(id));
+        selected=id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);
+        form=false;notice="已保存";pl::input::hideKeyboard();enqueue(*store.get(id));
     }
     void act(const Hit& hit) {
         switch(hit.action) {
@@ -169,14 +253,14 @@ class AndroidMod {
         case 3:dismiss();break;
         case 4:if(page>0)--page;break;
         case 5:++page;break;
-        case 6:selected=hit.id;logoReady=bannerReady=false;if(auto s=ServerStore::getInstance().get(selected))enqueue(*s);break;
+        case 6:selected=hit.id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);if(auto s=ServerStore::getInstance().get(selected))enqueue(*s);break;
         case 7:save();break;
         case 8:form=false;confirm=false;pl::input::hideKeyboard();break;
         case 9:confirm=true;pl::input::hideKeyboard();break;
         case 10:focus=0;nameEdit.end(name);pl::input::showKeyboard();break;
         case 11:focus=1;addressEdit.end(address);pl::input::showKeyboard();break;
         case 12:if(!selected.empty())newForm(selected);break;
-        case 13:++generations[editId];std::erase_if(tasks,[&](const auto& t){return t.server.id==editId;});ServerStore::getInstance().remove(editId);ServerStore::getInstance().save();statuses.erase(editId);selected.clear();logoReady=bannerReady=false;form=confirm=false;break;
+        case 13:++generations[editId];std::erase_if(tasks,[&](const auto& t){return t.server.id==editId;});ServerStore::getInstance().remove(editId);ServerStore::getInstance().save();statuses.erase(editId);selected.clear();logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);form=confirm=false;break;
         }
     }
     bool touch(const pl::input::TouchEvent& event) {
@@ -232,8 +316,12 @@ class AndroidMod {
                     auto servers=ServerStore::getInstance().list();int rows=std::max(1,static_cast<int>((viewHeight-245)/64));int pages=std::max(1,(static_cast<int>(servers.size())+rows-1)/rows);page=std::clamp(page,0,pages-1);
                     if(servers.empty())text(left+20,100,"还没有服务器，点击右上角“添加”开始。",19);
                     for(int row=0;row<rows;++row){auto index=page*rows+row;if(index>=static_cast<int>(servers.size()))break;const auto& s=servers[index];float y=65+row*64.f;
-                        rect(left,y,right-left,58,s.id==selected?0xff44633b:0xe03a403c);image(s.id==selected&&logoReady?"sle.selected.logo":"sle.default.logo",left+6,y+5,48,48,s.id==selected&&logoReady?logoWidth:64,s.id==selected&&logoReady?logoHeight:64);
-                        auto status=statuses.find(s.id);text(left+66,y+4,fit(s.name.empty()?s.address:s.name,26),18);
+                        rect(left,y,right-left,58,s.id==selected?0xff44633b:0xe03a403c);
+                        std::string logoId=s.id==selected?animationId(logoAnimation):std::string{};
+                        image(logoId.empty()?(s.id==selected&&logoReady?"sle.selected.logo":"sle.default.logo"):logoId.c_str(),left+6,y+5,48,48,
+                            logoId.empty()?(s.id==selected&&logoReady?logoWidth:64):logoAnimation.width,
+                            logoId.empty()?(s.id==selected&&logoReady?logoHeight:64):logoAnimation.height);
+                        auto status=statuses.find(s.id);text(left+66,y+4,fit(displayName(s,status),26),18);
                         text(left+66,y+32,fit(client::displayAddress(s.address,s.port),48),13,0xffcccccc);
                         std::string detail="未查询";if(!client::validServerEndpoint(s.address,s.port))detail="地址无效，请编辑";
                         else if(status!=statuses.end()){const auto& v=status->second;detail=v.pending?"查询中…":!v.error.empty()?"查询失败（可重试）":v.version+"  "+std::to_string(v.players)+"/"+std::to_string(v.capacity);}
@@ -241,7 +329,10 @@ class AndroidMod {
                     }
                     float dy=viewHeight-170;rect(left,dy,right-left,110,0xd0252c27);
                     if(auto s=ServerStore::getInstance().get(selected)){
-                        image(bannerReady?"sle.selected.banner":"sle.default.banner",left+8,dy+5,220,100,bannerReady?bannerWidth:960,bannerReady?bannerHeight:320);
+                        std::string bannerId=animationId(bannerAnimation);
+                        image(bannerId.empty()?(bannerReady?"sle.selected.banner":"sle.default.banner"):bannerId.c_str(),left+8,dy+5,220,100,
+                            bannerId.empty()?(bannerReady?bannerWidth:960):bannerAnimation.width,
+                            bannerId.empty()?(bannerReady?bannerHeight:320):bannerAnimation.height);
                         std::string intro=s->introText;auto state=statuses.find(selected);if(intro.empty()&&state!=statuses.end()){if(state->second.visual)intro=state->second.visual->introText;else intro=state->second.message;}
                         std::istringstream lines(intro);std::string line;int row=0;while(row<4&&std::getline(lines,line)){text(left+245,dy+8+row*22,fit(line,34),15);++row;}
                     }else text(left+20,dy+35,"点选服务器查看图文资料；编辑可以修改或删除。",16);

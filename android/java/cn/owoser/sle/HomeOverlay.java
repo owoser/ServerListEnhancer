@@ -9,6 +9,7 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -19,6 +20,7 @@ import android.view.PixelCopy;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -52,6 +54,12 @@ public final class HomeOverlay {
     private static long lastEntryProbeAt;
     private static boolean entryObservationLogged;
     private static boolean entryProbeInFlight;
+    /** 连续失去窗口焦点超过该时长才确认列表应当关闭；截图、软键盘、系统弹窗只造成短时失焦。 */
+    private static final long FOCUS_GRACE_MS = 1200L;
+    /** 首次延迟确认的等待时间；仍在宽限期内时按剩余预算重复确认。 */
+    private static final long FOCUS_CONFIRM_MS = 350L;
+    private static long focusLostAt;
+    private static Runnable focusConfirmation;
 
     private HomeOverlay() {}
     private static native boolean nativeBindMainActivity(Class<?> mainActivityClass);
@@ -83,6 +91,21 @@ public final class HomeOverlay {
     }
 
     public static String queryState() { return snapshot; }
+
+    /** 当前被软键盘覆盖的高度（像素），0 表示键盘没有遮挡界面。 */
+    public static int imeHeightPx() {
+        OverlayView current = view;
+        return current == null ? 0 : current.imeInset;
+    }
+
+    /** 去掉软键盘后可供界面排版的高度（像素）；queryState 的 height 已按该值上报。 */
+    public static int availableHeightPx() {
+        OverlayView current = view;
+        return current == null ? 0 : Math.max(0, current.contentHeight());
+    }
+
+    /** 软键盘当前是否遮挡界面，原生侧可据此把输入区整体上移或压缩。 */
+    public static boolean imeVisible() { return imeHeightPx() > 0; }
 
     public static void openFromHomeControl() {
         if (closed) return;
@@ -260,6 +283,93 @@ public final class HomeOverlay {
         return true;
     }
 
+    private static boolean windowFocusHeld() {
+        Activity current = activity;
+        return current != null && !current.isFinishing() && !current.isDestroyed() && current.hasWindowFocus();
+    }
+
+    private static void clearFocusGrace() {
+        focusLostAt = 0L;
+        if (focusConfirmation != null) {
+            UI.removeCallbacks(focusConfirmation);
+            focusConfirmation = null;
+        }
+    }
+
+    /** 失焦只记录起点并安排延迟确认：截图、软键盘、系统弹窗都会短暂夺走窗口焦点。 */
+    private static void noteWindowFocus(boolean focused) {
+        if (focused) {
+            clearFocusGrace();
+            return;
+        }
+        if (!home || activeSession == 0L) return;
+        if (focusLostAt == 0L) focusLostAt = SystemClock.uptimeMillis();
+        armFocusConfirmation();
+    }
+
+    private static void armFocusConfirmation() {
+        if (focusConfirmation != null) return;
+        focusConfirmation = new Runnable() {
+            @Override public void run() {
+                focusConfirmation = null;
+                if (closed || !home || activeSession == 0L) {
+                    focusLostAt = 0L;
+                    return;
+                }
+                if (windowFocusHeld()) {
+                    focusLostAt = 0L;
+                    publishSnapshot(false);
+                    return;
+                }
+                if (imeHeightPx() > 0) {
+                    // 软键盘弹出期间的失焦不代表用户离开了列表。
+                    focusLostAt = 0L;
+                    return;
+                }
+                long now = SystemClock.uptimeMillis();
+                if (focusLostAt == 0L) focusLostAt = now;
+                if (now - focusLostAt < FOCUS_GRACE_MS) {
+                    armFocusConfirmation();
+                    return;
+                }
+                closeActiveSession();
+                publishSnapshot(true);
+            }
+        };
+        long delay = FOCUS_CONFIRM_MS;
+        if (focusLostAt != 0L) {
+            long elapsed = SystemClock.uptimeMillis() - focusLostAt;
+            delay = Math.max(0L, Math.min(FOCUS_CONFIRM_MS, FOCUS_GRACE_MS - elapsed));
+        }
+        UI.postDelayed(focusConfirmation, delay);
+    }
+
+    /** tick 使用的阻塞判断：列表打开期间容忍短时失焦；列表关闭时保持原有立即阻塞判断。 */
+    private static boolean blockedForSession(Activity currentActivity) {
+        if (currentActivity == null || currentActivity.isFinishing() || currentActivity.isDestroyed()) return true;
+        if (!home || activeSession == 0L) return isBlocked(currentActivity);
+        try {
+            boolean resumed = Boolean.TRUE.equals(resumedMethod.invoke(null));
+            Object manager = managerInstanceMethod.invoke(null);
+            boolean menuOpen = manager == null || Boolean.TRUE.equals(managerShowingMethod.invoke(manager));
+            if (!resumed || menuOpen) return true;
+            if (currentActivity.hasWindowFocus()) {
+                clearFocusGrace();
+                return false;
+            }
+            if (imeHeightPx() > 0) {
+                clearFocusGrace();
+                return false;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (focusLostAt == 0L) focusLostAt = now;
+            armFocusConfirmation();
+            return now - focusLostAt > FOCUS_GRACE_MS + 800L;
+        } catch (Throwable failure) {
+            return true;
+        }
+    }
+
     private static boolean isBlocked(Activity currentActivity) {
         if (currentActivity == null || currentActivity.isFinishing() || currentActivity.isDestroyed()) {
             return true;
@@ -278,6 +388,7 @@ public final class HomeOverlay {
     private static void closeActiveSession() {
         home = false;
         activeSession = 0L;
+        clearFocusGrace();
         if (view != null) {
             view.mode = 0;
             view.session = 0L;
@@ -298,14 +409,17 @@ public final class HomeOverlay {
             state.put("session", openNow ? activeSession : 0L);
             state.put("screen", openNow ? "native_home_button" : "");
             state.put("width", view == null ? 0 : view.surfaceWidth());
-            state.put("height", view == null ? 0 : view.surfaceHeight());
+            // 软键盘遮挡时上报可用高度，原生侧按该高度重新排版，底部按钮仍在键盘之上。
+            state.put("height", view == null ? 0 : view.contentHeight());
+            state.put("ime", view == null ? 0 : view.imeInset);
             snapshot = state.toString();
         } catch (Exception ignored) { snapshot = UNKNOWN; }
     }
 
     private static void tick() {
         boolean available = refreshEnvironment();
-        boolean blocked = !available || isBlocked(activity);
+        if (view != null) view.pollIme();
+        boolean blocked = !available || blockedForSession(activity);
         if (blocked && home) {
             closeActiveSession();
         }
@@ -315,6 +429,7 @@ public final class HomeOverlay {
     private static void disposeView() {
         home = false;
         activeSession = 0L;
+        clearFocusGrace();
         if (view != null) {
             view.mode = 0;
             view.session = 0L;
@@ -435,6 +550,15 @@ public final class HomeOverlay {
         return false;
     }
 
+    /** API 30+ 才有精确的 IME inset；单独成类，旧系统不会解析这个类里缺失的类型。 */
+    private static final class InsetsApi30 {
+        static int imeBottom(WindowInsets insets) {
+            if (insets == null) return 0;
+            android.graphics.Insets ime = insets.getInsets(WindowInsets.Type.ime());
+            return ime == null ? 0 : Math.max(0, ime.bottom);
+        }
+    }
+
     private static final class OverlayView extends View {
         int mode;
         long session;
@@ -443,7 +567,13 @@ public final class HomeOverlay {
         final Paint pixels = new Paint();
         final RectF destination = new RectF();
         final Path triangle = new Path();
+        final Rect visibleFrame = new Rect();
         boolean listTracking;
+        int imeInset;
+        long imeMeasuredAt;
+        int baselineWidth;
+        int baselineHeight;
+        boolean insetsReported;
 
         OverlayView(Activity owner) {
             super(owner);
@@ -452,10 +582,74 @@ public final class HomeOverlay {
             pixels.setAntiAlias(false);
             setFocusable(false);
             setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            setOnApplyWindowInsetsListener((target, insets) -> {
+                applyWindowInsets(insets);
+                return insets;
+            });
         }
 
         int surfaceWidth() { return getWidth() > 0 ? getWidth() : getRootView().getWidth(); }
         int surfaceHeight() { return getHeight() > 0 ? getHeight() : getRootView().getHeight(); }
+
+        /** 可供排版的高度：软键盘遮挡时扣掉 IME 高度；窗口已被系统压缩时不再重复扣减。 */
+        int contentHeight() {
+            int height = surfaceHeight();
+            if (imeInset <= 0 || height <= 0) return height;
+            if (baselineWidth == surfaceWidth() && baselineHeight > 0 && height + imeInset <= baselineHeight) return height;
+            return Math.max(1, height - imeInset);
+        }
+
+        void applyWindowInsets(WindowInsets insets) {
+            if (insets == null) return;
+            if (Build.VERSION.SDK_INT >= 30) {
+                insetsReported = true;
+                applyImeInset(InsetsApi30.imeBottom(insets));
+            } else {
+                pollIme();
+            }
+        }
+
+        /** API 28 兼容路径：用可见显示区域估算软键盘遮挡高度。 */
+        void pollIme() {
+            long now = SystemClock.uptimeMillis();
+            if (now - imeMeasuredAt < 200L) return;
+            imeMeasuredAt = now;
+            if (Build.VERSION.SDK_INT >= 30 && insetsReported) return;
+            if (!isAttachedToWindow()) return;
+            View root = getRootView();
+            int rootHeight = root == null ? 0 : root.getHeight();
+            if (rootHeight <= 0) return;
+            int[] rootLocation = new int[2];
+            try {
+                getWindowVisibleDisplayFrame(visibleFrame);
+                root.getLocationOnScreen(rootLocation);
+            } catch (Throwable failure) {
+                return;
+            }
+            if (visibleFrame.bottom <= 0) return;
+            int covered = rootLocation[1] + rootHeight - visibleFrame.bottom;
+            // 导航栏远小于键盘：不足视口 12% 的遮挡不当作软键盘。
+            int threshold = Math.max(1, rootHeight * 12 / 100);
+            applyImeInset(covered > threshold ? covered : 0);
+        }
+
+        void applyImeInset(int raw) {
+            int height = surfaceHeight();
+            int inset = 0;
+            if (raw > 0 && height > 0) {
+                int[] location = new int[2];
+                getLocationInWindow(location);
+                View root = getRootView();
+                int rootHeight = root == null ? 0 : root.getHeight();
+                int bottomOffset = rootHeight > 0 ? Math.max(0, rootHeight - (location[1] + getHeight())) : 0;
+                inset = Math.min(Math.max(0, raw - bottomOffset), height * 3 / 5);
+            }
+            if (inset == imeInset) return;
+            imeInset = inset;
+            invalidate();
+            // 可用高度变化会让原生侧重新排版，立即刷新快照，避免最多 50ms 的旧高度。
+            UI.post(() -> { if (!closed) tick(); });
+        }
 
         void applyVisibility() {
             boolean visible = !closed && home && mode == 2 && session != 0L && session == activeSession
@@ -474,6 +668,14 @@ public final class HomeOverlay {
                 setFocusableInTouchMode(false);
                 setFocusable(false);
                 clearFocus();
+            }
+        }
+
+        @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+            super.onSizeChanged(width, height, oldWidth, oldHeight);
+            if (imeInset <= 0 && width > 0 && height > 0) {
+                baselineWidth = width;
+                baselineHeight = height;
             }
         }
 
@@ -567,10 +769,13 @@ public final class HomeOverlay {
 
         @Override public void onWindowFocusChanged(boolean focused) {
             super.onWindowFocusChanged(focused);
-            if (!focused) {
-                closeActiveSession();
-                publishSnapshot(true);
-            }
+            noteWindowFocus(focused);
+        }
+
+        @Override protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            insetsReported = false;
+            requestApplyInsets();
         }
 
         @Override protected void onDetachedFromWindow() {
@@ -579,6 +784,8 @@ public final class HomeOverlay {
             session = 0L;
             home = false;
             activeSession = 0L;
+            imeInset = 0;
+            insetsReported = false;
             snapshot = UNKNOWN;
         }
 
