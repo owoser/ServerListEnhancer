@@ -2,6 +2,7 @@
     "name": "${modName}",
     "entry": "${modFile}",
     "version": "${modVersion}",
+    "author": "OWOSER Dev",
     "type": "native",
     "platform": "${modPlatform}"
 }
