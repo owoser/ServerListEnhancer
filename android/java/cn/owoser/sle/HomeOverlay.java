@@ -535,19 +535,51 @@ public final class HomeOverlay {
         }
     }
 
+    /**
+     * 首页标记色 #C6C6C3：r=g=198、b=195，与按钮灰 #C6C6C6 只差蓝通道 3，肉眼无法分辨；
+     * 自然画面里几乎不会出现 r 与 g 相等、蓝通道又恰好低 2~4 的像素。
+     */
+    private static final int MARKER_RED_GREEN_TOLERANCE = 1;
+    private static final int MARKER_BLUE_DROP_MIN = 2;
+    private static final int MARKER_BLUE_DROP_MAX = 4;
+
+    private static boolean entryMarkerPixel(int pixel) {
+        int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
+        int redGreen = red > green ? red - green : green - red;
+        int blueDrop = green - blue;
+        return redGreen <= MARKER_RED_GREEN_TOLERANCE && blueDrop >= MARKER_BLUE_DROP_MIN && blueDrop <= MARKER_BLUE_DROP_MAX;
+    }
+
+    /**
+     * 标记只有 1 个逻辑像素，按 GUI 缩放通常落成 2×2 物理像素：优先要求 2×2 全部命中，
+     * 避免与自然画面里零散的同色像素混淆；整幅采样只剩唯一一处命中时也接受（标记只剩 1 像素的情况）。
+     */
     private static boolean containsEntryMarker(Bitmap shot) {
         int width = shot.getWidth();
         int height = shot.getHeight();
-        int[] row = new int[width];
+        if (width < 1 || height < 1) return false;
+        int[] current = new int[width];
+        int[] previous = new int[width];
+        boolean hasPrevious = false;
+        int matches = 0;
         for (int y = 0; y < height; ++y) {
-            shot.getPixels(row, 0, width, 0, y, width, 1);
+            shot.getPixels(current, 0, width, 0, y, width, 1);
             for (int x = 0; x < width; ++x) {
-                int pixel = row[x];
-                int r = (pixel >> 16) & 255, g = (pixel >> 8) & 255, b = pixel & 255;
-                if (r >= 200 && g <= 90 && b >= 200) return true;
+                if (!entryMarkerPixel(current[x])) continue;
+                ++matches;
+                if (hasPrevious && x > 0
+                        && entryMarkerPixel(current[x - 1])
+                        && entryMarkerPixel(previous[x])
+                        && entryMarkerPixel(previous[x - 1])) {
+                    return true;
+                }
             }
+            int[] swap = previous;
+            previous = current;
+            current = swap;
+            hasPrevious = true;
         }
-        return false;
+        return matches == 1;
     }
 
     /** API 30+ 才有精确的 IME inset；单独成类，旧系统不会解析这个类里缺失的类型。 */

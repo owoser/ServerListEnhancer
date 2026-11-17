@@ -12,6 +12,7 @@
 #include <pl/ModMenu.hpp>
 #include <pl/Input.hpp>
 #include <android/log.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -63,6 +64,33 @@ float textAdvance(std::string_view text,float size) {
     }
     return width;
 }
+// 行图标在真机上只占 48 个设计单位，统一按长边 ≤64 px 保存，避免大图挤爆帧预算。
+constexpr int RowImageSide=64;
+std::pair<int,int> rowImageSize(int width,int height) {
+    if(width<=0||height<=0)return {0,0};
+    if(width<=RowImageSide&&height<=RowImageSide)return {width,height};
+    const float ratio=static_cast<float>(RowImageSide)/static_cast<float>(std::max(width,height));
+    return {std::max(1,static_cast<int>(width*ratio+.5f)),std::max(1,static_cast<int>(height*ratio+.5f))};
+}
+// 最近邻降采样：输入 RGBA，输出按行紧密排列（每行 dw*4 字节，无填充）。
+std::vector<unsigned char> scaleRgba(std::span<const unsigned char> source,int sw,int sh,int dw,int dh) {
+    std::vector<unsigned char> out;
+    if(sw<=0||sh<=0||dw<=0||dh<=0)return out;
+    if(source.size()!=std::size_t(sw)*std::size_t(sh)*4)return out;
+    out.resize(std::size_t(dw)*std::size_t(dh)*4);
+    for(int y=0;y<dh;++y) {
+        const int sy=std::min(sh-1,static_cast<int>(static_cast<std::int64_t>(y)*sh/dh));
+        const unsigned char* srcRow=source.data()+std::size_t(sy)*std::size_t(sw)*4;
+        unsigned char* dstRow=out.data()+std::size_t(y)*std::size_t(dw)*4;
+        for(int x=0;x<dw;++x) {
+            const int sx=std::min(sw-1,static_cast<int>(static_cast<std::int64_t>(x)*sw/dw));
+            const unsigned char* src=srcRow+std::size_t(sx)*4;
+            dstRow[std::size_t(x)*4+0]=src[0];dstRow[std::size_t(x)*4+1]=src[1];
+            dstRow[std::size_t(x)*4+2]=src[2];dstRow[std::size_t(x)*4+3]=src[3];
+        }
+    }
+    return out;
+}
 std::string codepoint(unsigned n) {
     std::string s;if(!n||n>0x10ffff||(n>=0xd800&&n<=0xdfff))return s;
     if(n<128)s+=static_cast<char>(n);
@@ -100,11 +128,21 @@ class AndroidMod {
         bool ready{};
     };
     Animation logoAnimation,bannerAnimation;
-    // 列表行图标：每个服务器一张静态首帧图，超过 32 张或 16 MiB 后按 LRU 回收。
+    // 列表行图标：每个服务器一张静态首帧图，超过 32 张或 32 MiB 后按 LRU 回收。
     struct RowImage {int width{},height{};std::int64_t used{};};
-    static constexpr std::size_t RowImageCount=32,RowImageBudget=16u*1024u*1024u;
+    static constexpr std::size_t RowImageCount=32,RowImageBudget=32u*1024u*1024u;
     std::map<std::string,RowImage> rowImages;
     std::size_t rowImageBytes{};
+    // 行内 GIF：每行各自循环播放自己的帧序列，最多同时 8 行动画，帧图与静态图标共用 32 MiB 预算。
+    struct RowAnimation {
+        std::vector<std::string> ids;
+        std::vector<int> delays;
+        int width{},height{},plays{};
+        std::int64_t started{},used{};
+        std::size_t bytes{};
+    };
+    static constexpr std::size_t RowAnimationCount=8,RowAnimationBytes=4u*1024u*1024u;
+    std::map<std::string,RowAnimation> rowAnimations;
     int udpProbePort{};
     LatencyProbe latencyProbe;
 
@@ -158,6 +196,92 @@ class AndroidMod {
         while(!rowImages.empty())clearRowImage(rowImages.begin()->first);
         rowImageBytes=0;
     }
+    // 行动画的当前帧 id：与选中项动画同一套算法，按累计帧延时取模循环。
+    static std::string rowFrameId(const RowAnimation& state) {
+        if(state.ids.empty())return {};
+        if(state.ids.size()==1||state.delays.size()!=state.ids.size())return state.ids.front();
+        std::int64_t total{};for(int delay:state.delays)total+=delay;if(total<=0)return state.ids.front();
+        const auto elapsed=steadyMillis()-state.started;const std::int64_t time=elapsed>0?elapsed:0;
+        if(state.plays>0&&time>=total*state.plays)return state.ids.back();
+        std::int64_t remaining=time%total;
+        for(std::size_t i=0;i<state.delays.size();++i){remaining-=state.delays[i];if(remaining<0)return state.ids[i];}
+        return state.ids.back();
+    }
+    // 行图标（静态首帧或动画帧）统一降采样到长边 ≤64 px：真机只显示 48 单位，原图尺寸没有意义。
+    Pixels rowPixels(std::span<const unsigned char> rgba,int width,int height) {
+        const auto size=rowImageSize(width,height);
+        const int dw=size.first,dh=size.second;
+        if(dw<=0||dh<=0)return {};
+        if(rgba.size()!=std::size_t(width)*std::size_t(height)*4)return {};
+        if(dw==width&&dh==height)return Pixels{width,height,std::vector<unsigned char>(rgba.begin(),rgba.end())};
+        auto scaled=scaleRgba(rgba,width,height,dw,dh);
+        if(scaled.size()!=std::size_t(dw)*std::size_t(dh)*4)return {};
+        return Pixels{dw,dh,std::move(scaled)};
+    }
+    // 用一个 1x1 透明图覆盖整组帧 id 并释放预算；HomeOverlay 会随即回收旧 Bitmap。
+    void clearRowAnimation(const std::string& key) {
+        auto it=rowAnimations.find(key);
+        if(it==rowAnimations.end())return;
+        static const unsigned char transparent[4]{};
+        for(const auto& id:it->second.ids)registerHomeUiImage(id,transparent,1,1);
+        rowImageBytes-=it->second.bytes;
+        rowAnimations.erase(it);
+    }
+    void clearRowAnimations() {
+        while(!rowAnimations.empty())clearRowAnimation(rowAnimations.begin()->first);
+    }
+    // 注册一行的 GIF：帧 id 为 sle.row.<serverId>#fN；超过 8 行或 32 MiB 时按 LRU 淘汰最旧的一行动画。
+    bool registerRowAnimation(const std::string& key,const GifAnimation& gif) {
+        if(gif.frameCount()<2||gif.width<=0||gif.height<=0)return false;
+        // 帧按长边 ≤64 px 降采样后再计入预算，延迟数组保持原样。
+        const auto size=rowImageSize(gif.width,gif.height);
+        const int width=size.first,height=size.second;
+        if(width<=0||height<=0)return false;
+        const std::size_t frameBytes=std::size_t(width)*std::size_t(height)*4;
+        const std::size_t bytes=frameBytes*gif.frameCount();
+        if(bytes>RowAnimationBytes)return false;
+        clearRowAnimation(key);
+        while(!rowAnimations.empty()&&(rowAnimations.size()>=RowAnimationCount||rowImageBytes+bytes>RowImageBudget)) {
+            auto victim=rowAnimations.begin();
+            for(auto it=rowAnimations.begin();it!=rowAnimations.end();++it)if(it->second.used<victim->second.used)victim=it;
+            clearRowAnimation(victim->first);
+        }
+        if(rowImageBytes+bytes>RowImageBudget)return false;
+        std::vector<std::vector<unsigned char>> frames;
+        frames.reserve(gif.frameCount());
+        for(std::size_t i=0;i<gif.frameCount();++i) {
+            auto frame=scaleRgba(gif.frame(i),gif.width,gif.height,width,height);
+            if(frame.size()!=frameBytes)return false;
+            frames.push_back(std::move(frame));
+        }
+        RowAnimation state;state.width=width;state.height=height;state.delays=gif.delays;state.plays=gif.plays;
+        state.started=state.used=steadyMillis();state.bytes=bytes;
+        static const unsigned char transparent[4]{};
+        state.ids.reserve(frames.size());
+        for(std::size_t i=0;i<frames.size();++i) {
+            auto id="sle.row."+key+"#f"+std::to_string(i);
+            if(!registerHomeUiImage(id,frames[i],width,height)) {
+                for(const auto& made:state.ids)registerHomeUiImage(made,transparent,1,1);
+                return false;
+            }
+            state.ids.push_back(std::move(id));
+        }
+        rowImageBytes+=bytes;rowAnimations[key]=std::move(state);return true;
+    }
+    // 翻页后回收不在当前页的行动画，把预算留给真正看得见的行。
+    void releaseOffPageRowAnimations(int rows) {
+        std::vector<std::string> visible;
+        auto servers=ServerStore::getInstance().list();
+        for(int i=0;i<rows;++i) {
+            auto index=page*rows+i;
+            if(index<0||index>=static_cast<int>(servers.size()))break;
+            visible.push_back(servers[index].id);
+        }
+        for(auto it=rowAnimations.begin();it!=rowAnimations.end();) {
+            auto current=it++;
+            if(std::find(visible.begin(),visible.end(),current->first)==visible.end())clearRowAnimation(current->first);
+        }
+    }
     void evictRowImages(std::size_t need) {
         while(!rowImages.empty()&&(rowImages.size()>=RowImageCount||rowImageBytes+need>RowImageBudget)) {
             auto victim=rowImages.begin();
@@ -180,6 +304,12 @@ class AndroidMod {
             return true;
         }
         evictRowImages(bytes);
+        while(!rowAnimations.empty()&&rowImageBytes+bytes>RowImageBudget) {
+            auto victim=rowAnimations.begin();
+            for(auto it=rowAnimations.begin();it!=rowAnimations.end();++it)if(it->second.used<victim->second.used)victim=it;
+            clearRowAnimation(victim->first);
+        }
+        if(rowImageBytes+bytes>RowImageBudget)return false;
         if(!registerHomeUiImage(id,rgba,width,height))return false;
         rowImages[id]={width,height,steadyMillis()};rowImageBytes+=bytes;
         return true;
@@ -199,7 +329,7 @@ class AndroidMod {
     void dismiss() {
         bool wasOpen=open;open=form=confirm=false;pressed=-1;hits.clear();
         // 关闭时释放逐帧 Bitmap，重新打开后由探测流程重新注册。
-        if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowImages();latencyProbe.pause();pl::input::hideKeyboard();}
+        if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimations();clearRowImages();latencyProbe.pause();pl::input::hideKeyboard();}
     }
     void openFromHome() {
         if(!active)return;auto state=homeUiState();
@@ -283,8 +413,17 @@ class AndroidMod {
                 // 行内只保留静态首帧：整页列表不会同时动画，只有选中项的详情可以播 GIF。
                 // 列表关闭时不注册行图标，避免 dismiss() 清空后又被后台线程补回来。
                 if(rowLogo&&visible){
-                    if(logoFrames.valid()&&logoFrames.frameCount()>0)registerRowImage("sle.row."+server.id,logoFrames.frame(0),logoFrames.width,logoFrames.height);
-                    else if(lp)registerRowImage("sle.row."+server.id,lp.rgba,lp.width,lp.height);
+                    // 静态首帧与动画帧共用同一套降采样结果，切换时不会跳尺寸。
+                    if(logoFrames.valid()&&logoFrames.frameCount()>0) {
+                        auto scaled=rowPixels(logoFrames.frame(0),logoFrames.width,logoFrames.height);
+                        if(scaled)registerRowImage("sle.row."+server.id,scaled.rgba,scaled.width,scaled.height);
+                    }
+                    else if(lp) {
+                        auto scaled=rowPixels(lp.rgba,lp.width,lp.height);
+                        if(scaled)registerRowImage("sle.row."+server.id,scaled.rgba,scaled.width,scaled.height);
+                    }
+                    // 预算允许时把整组帧注册进来：未选中的行也按自己的延时间隔播放。
+                    if(logoFrames.valid()&&logoFrames.frameCount()>1)registerRowAnimation(server.id,logoFrames);
                 }
                 if(selectedNow&&selected==server.id){
                     clearAnimation(logoAnimation);clearAnimation(bannerAnimation);
@@ -318,7 +457,7 @@ class AndroidMod {
         // 探测结果不会写回 servers.json，因此失败时已有名称不会被改掉。
         s.name=name;s.address=parsed.host;s.port=parsed.port;auto id=store.upsert(s);
         if(id.empty()||!store.save()){notice="保存失败，请检查存储空间";return;}
-        selected=id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowImage("sle.row."+id);
+        selected=id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimation(id);clearRowImage("sle.row."+id);
         form=false;notice="已保存";pl::input::hideKeyboard();enqueue(*store.get(id));
     }
     void act(const Hit& hit) {
@@ -326,17 +465,16 @@ class AndroidMod {
         case 1:refresh();notice="已排队查询全部服务器";break;
         case 2:newForm({});break;
         case 3:dismiss();break;
-        case 4:if(page>0)--page;latencyProbe.pause();break;
-        case 5:++page;latencyProbe.pause();break;
+        case 4:if(page>0)--page;latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
+        case 5:++page;latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
         case 6:selected=hit.id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);if(auto s=ServerStore::getInstance().get(selected))enqueue(*s);break;
         case 7:save();break;
         case 8:form=false;confirm=false;pl::input::hideKeyboard();break;
         case 9:confirm=true;pl::input::hideKeyboard();break;
         case 10:focus=0;nameEdit.end(name);pl::input::showKeyboard();break;
         case 11:focus=1;addressEdit.end(address);pl::input::showKeyboard();break;
-        case 12:if(!selected.empty())newForm(selected);break;
         case 14:if(!hit.id.empty())newForm(hit.id);break;
-        case 13:++generations[editId];std::erase_if(tasks,[&](const auto& t){return t.server.id==editId;});ServerStore::getInstance().remove(editId);ServerStore::getInstance().save();statuses.erase(editId);clearRowImage("sle.row."+editId);selected.clear();logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);form=confirm=false;break;
+        case 13:++generations[editId];std::erase_if(tasks,[&](const auto& t){return t.server.id==editId;});ServerStore::getInstance().remove(editId);ServerStore::getInstance().save();statuses.erase(editId);clearRowAnimation(editId);clearRowImage("sle.row."+editId);selected.clear();logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);form=confirm=false;break;
         }
     }
     bool touch(const pl::input::TouchEvent& event) {
@@ -375,7 +513,7 @@ class AndroidMod {
                 scale=std::max(.5f,std::min(display.width/800.f,display.height/480.f));viewWidth=display.width/scale;viewHeight=display.height/scale;
                 auto rect=[&](float x,float y,float w,float h,std::uint32_t color){commands.push_back({.type=pl::modmenu::DrawCommandType::RectFilled,.x=x*scale,.y=y*scale,.w=w*scale,.h=h*scale,.color=color});};
                 auto text=[&](float x,float y,std::string value,float size=16,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=x*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
-                auto button=[&](float x,float y,float w,std::string label,int action,std::string id=std::string{}){rect(x,y,w,36,0xff424242);text(x+10,y+8,std::move(label),16);hits.push_back({x,y,w,36,action,std::move(id)});};
+                auto button=[&](float x,float y,float w,std::string label,int action,std::string id=std::string{}){const float labelWidth=textAdvance(label,16);rect(x,y,w,36,0xff424242);text(x+(w-labelWidth)/2,y+8,std::move(label),16);hits.push_back({x,y,w,36,action,std::move(id)});};
                 auto image=[&](const char* id,float x,float y,float w,float h,int iw,int ih){float r=std::min(w/iw,h/ih);commands.push_back({.type=pl::modmenu::DrawCommandType::Image,.x=(x+(w-iw*r)/2)*scale,.y=(y+(h-ih*r)/2)*scale,.w=iw*r*scale,.h=ih*r*scale,.color=0xffffffff,.imageId=id});};
                 // 右侧信息列（玩家数/UDP 时延/版本）右对齐：Home 覆盖层只有左对齐，先估算宽度再反推起点。
                 auto rightText=[&](float rightEdge,float y,std::string value,float size,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=(rightEdge-textAdvance(value,size))*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
@@ -385,8 +523,16 @@ class AndroidMod {
                     float x=std::max(20.f,(viewWidth-560)/2);rect(x,65,560,310,0xff303632);text(x+20,75,confirm?"确认删除此服务器？":editId.empty()?"添加服务器":"编辑服务器",22);
                     if(confirm){text(x+20,125,fit(name,28));button(x+20,230,180,"确认删除",13);button(x+220,230,180,"取消",8);}
                     else {
-                        text(x+20,112,"名称（可留空）",14);rect(x+20,135,520,38,focus==0?0xff486045:0xff454545);text(x+30,142,fit(name.empty()?"点击输入名称":name,28));hits.push_back({x+20,135,520,38,10,{}});
-                        text(x+20,185,"地址：域名/IP:端口，默认 19132",14);rect(x+20,209,520,38,focus==1?0xff486045:0xff454545);text(x+30,216,fit(address.empty()?"点击输入 play.example.com:19132":address,40));hits.push_back({x+20,209,520,38,11,{}});
+                        // 光标约 500ms 亮灭一次；只按已绘制文字的像素宽度定位，不参与布局。
+                        const bool caretOn=(steadyMillis()/500)%2==0;
+                        text(x+20,112,"名称（可留空）",14);rect(x+20,135,520,38,focus==0?0xff486045:0xff454545);
+                        const std::string nameText=fit(name.empty()?"点击输入名称":name,28);text(x+30,142,nameText);
+                        if(focus==0&&caretOn)rect(std::min(name.empty()?x+30:x+30+textAdvance(nameText,28),x+534),142,2,28,0xffffffff);
+                        hits.push_back({x+20,135,520,38,10,{}});
+                        text(x+20,185,"地址：域名/IP:端口，默认 19132",14);rect(x+20,209,520,38,focus==1?0xff486045:0xff454545);
+                        const std::string addressText=fit(address.empty()?"点击输入 play.example.com:19132":address,40);text(x+30,216,addressText,16);
+                        if(focus==1&&caretOn)rect(std::min(address.empty()?x+30:x+30+textAdvance(addressText,16),x+534),216,2,16,0xffffffff);
+                        hits.push_back({x+20,209,520,38,11,{}});
                         button(x+20,275,120,"保存",7);button(x+150,275,120,"取消",8);if(!editId.empty())button(x+400,275,140,"删除",9);
                         text(x+20,325,fit(notice,42),14,0xffffcb80);
                     }
@@ -396,12 +542,16 @@ class AndroidMod {
                     for(int row=0;row<rows;++row){auto index=page*rows+row;if(index>=static_cast<int>(servers.size()))break;const auto& s=servers[index];float y=65+row*64.f;
                         const float editX=right-35,columnRight=editX-8;
                         rect(left,y,editX-left,58,s.id==selected?0xff44633b:0xe03a403c);
-                        // 行图标：该服务器自己的静态首帧 → 选中项动画 → 选中项静图 → 默认图标。
+                        // 行图标：该行 GIF 当前帧 → 该行静态首帧 → 选中项动画 → 选中项静图 → 默认图标。
+                        const std::int64_t rowNow=steadyMillis();
+                        std::string rowFrame;int rowFrameW=0,rowFrameH=0;
+                        if(auto animation=rowAnimations.find(s.id);animation!=rowAnimations.end()){rowFrame=rowFrameId(animation->second);animation->second.used=rowNow;rowFrameW=animation->second.width;rowFrameH=animation->second.height;}
                         std::string frameId=selected==s.id?animationId(logoAnimation):std::string{};
                         std::string rowId="sle.row."+s.id;auto ownImage=rowImages.find(rowId);
                         std::string logoId="sle.default.logo";int logoW=64,logoH=64;
-                        if(!frameId.empty()){logoId=frameId;logoW=logoAnimation.width;logoH=logoAnimation.height;}
-                        else if(ownImage!=rowImages.end()){logoId=rowId;logoW=ownImage->second.width;logoH=ownImage->second.height;ownImage->second.used=steadyMillis();}
+                        if(!rowFrame.empty()){logoId=rowFrame;logoW=rowFrameW;logoH=rowFrameH;}
+                        else if(ownImage!=rowImages.end()){logoId=rowId;logoW=ownImage->second.width;logoH=ownImage->second.height;ownImage->second.used=rowNow;}
+                        else if(!frameId.empty()){logoId=frameId;logoW=logoAnimation.width;logoH=logoAnimation.height;}
                         else if(selected==s.id&&logoReady){logoId="sle.selected.logo";logoW=logoWidth;logoH=logoHeight;}
                         image(logoId.c_str(),left+6,y+5,48,48,logoW,logoH);
                         auto status=statuses.find(s.id);text(left+66,y+4,fit(displayName(s,status),26),18);
@@ -433,7 +583,7 @@ class AndroidMod {
                         std::string intro=s->introText;auto state=statuses.find(selected);if(intro.empty()&&state!=statuses.end()){if(state->second.visual)intro=state->second.visual->introText;else intro=state->second.message;}
                         std::istringstream lines(intro);std::string line;int row=0;while(row<4&&std::getline(lines,line)){text(left+245,dy+8+row*22,fit(line,34),15);++row;}
                     }else text(left+20,dy+35,"点选服务器查看图文资料；编辑可以修改或删除。",16);
-                    button(left,viewHeight-48,90,"上一页",4);button(left+100,viewHeight-48,90,"下一页",5);text(left+210,viewHeight-39,std::to_string(page+1)+"/"+std::to_string(pages),16);button(right-130,viewHeight-48,130,"编辑所选",12);
+                    button(left,viewHeight-48,90,"上一页",4);button(left+100,viewHeight-48,90,"下一页",5);text(left+210,viewHeight-39,std::to_string(page+1)+"/"+std::to_string(pages),16);
                     if(!notice.empty())text(left+300,viewHeight-38,fit(notice,22),13,0xffcbdfb0);
                 }
             }}
@@ -472,7 +622,7 @@ public:
     }
     bool disable(){
         active=false;changed.notify_all();if(renderer.joinable())renderer.join();for(auto& t:workers)if(t.joinable())t.join();workers.clear();
-        {std::lock_guard lock(mutex);open=form=false;hits.clear();tasks.clear();rowImages.clear();rowImageBytes=0;}
+        {std::lock_guard lock(mutex);open=form=false;hits.clear();tasks.clear();rowAnimations.clear();rowImages.clear();rowImageBytes=0;}
         latencyProbe.stop();
         pl::input::hideKeyboard();closeHomeUi();pl::modmenu::unregisterModule(Module);return ServerStore::getInstance().save();
     }
