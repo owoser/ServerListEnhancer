@@ -3,6 +3,7 @@
 #include "Discovery.h"
 #include "GifAnimation.h"
 #include "HomeUi.h"
+#include "LatencyProbe.h"
 #include "ServerStore.h"
 #include "TextEdit.h"
 #include "common/BuiltinImages.h"
@@ -50,6 +51,18 @@ std::string fit(std::string value,std::size_t count) {
     std::size_t pos{};while(count--&&pos<value.size())pos=client::TextEdit::next(value,pos);
     if(pos<value.size())value=value.substr(0,pos)+"…";return value;
 }
+// 估算一段文本的像素宽度：ASCII 按 0.56 倍字号，其余（中文等）按 1 倍字号累加。
+// Home 覆盖层的文本绘制只支持左对齐，右侧信息列靠这个宽度反推起点。
+float textAdvance(std::string_view text,float size) {
+    float width{};
+    for(std::size_t i=0;i<text.size();) {
+        auto c=static_cast<unsigned char>(text[i]);
+        std::size_t len=c<0x80?1:(c>>5)==6?2:(c>>4)==14?3:(c>>3)==30?4:1;
+        width+=len==1?size*.56f:size;
+        i+=len;
+    }
+    return width;
+}
 std::string codepoint(unsigned n) {
     std::string s;if(!n||n>0x10ffff||(n>=0xd800&&n<=0xdfff))return s;
     if(n<128)s+=static_cast<char>(n);
@@ -87,6 +100,13 @@ class AndroidMod {
         bool ready{};
     };
     Animation logoAnimation,bannerAnimation;
+    // 列表行图标：每个服务器一张静态首帧图，超过 32 张或 16 MiB 后按 LRU 回收。
+    struct RowImage {int width{},height{};std::int64_t used{};};
+    static constexpr std::size_t RowImageCount=32,RowImageBudget=16u*1024u*1024u;
+    std::map<std::string,RowImage> rowImages;
+    std::size_t rowImageBytes{};
+    int udpProbePort{};
+    LatencyProbe latencyProbe;
 
     static std::int64_t steadyMillis() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -125,6 +145,45 @@ class AndroidMod {
         for(const auto& id:state.ids)registerHomeUiImage(id,transparent,1,1);
         state=Animation{};
     }
+    // 用 1x1 透明图覆盖行图标 id：HomeOverlay 会回收旧 Bitmap，同时释放预算。
+    void clearRowImage(const std::string& id) {
+        static const unsigned char transparent[4]{};
+        registerHomeUiImage(id,transparent,1,1);
+        auto it=rowImages.find(id);
+        if(it==rowImages.end())return;
+        rowImageBytes-=std::size_t(it->second.width)*std::size_t(it->second.height)*4;
+        rowImages.erase(it);
+    }
+    void clearRowImages() {
+        while(!rowImages.empty())clearRowImage(rowImages.begin()->first);
+        rowImageBytes=0;
+    }
+    void evictRowImages(std::size_t need) {
+        while(!rowImages.empty()&&(rowImages.size()>=RowImageCount||rowImageBytes+need>RowImageBudget)) {
+            auto victim=rowImages.begin();
+            for(auto it=rowImages.begin();it!=rowImages.end();++it)if(it->second.used<victim->second.used)victim=it;
+            clearRowImage(victim->first);
+        }
+    }
+    // 注册列表行图标（只存静态首帧）；同 id 同尺寸时直接复用，避免重复上传。
+    bool registerRowImage(const std::string& id,std::span<const unsigned char> rgba,int width,int height) {
+        if(id.empty()||width<=0||height<=0)return false;
+        const std::size_t bytes=std::size_t(width)*std::size_t(height)*4;
+        if(bytes*2>RowImageBudget)return false;
+        auto it=rowImages.find(id);
+        if(it!=rowImages.end()) {
+            it->second.used=steadyMillis();
+            if(it->second.width==width&&it->second.height==height)return true;
+            if(!registerHomeUiImage(id,rgba,width,height))return false;
+            rowImageBytes-=std::size_t(it->second.width)*std::size_t(it->second.height)*4;
+            it->second.width=width;it->second.height=height;rowImageBytes+=bytes;
+            return true;
+        }
+        evictRowImages(bytes);
+        if(!registerHomeUiImage(id,rgba,width,height))return false;
+        rowImages[id]={width,height,steadyMillis()};rowImageBytes+=bytes;
+        return true;
+    }
     // 列表标题与 Windows 端一致：自定义名称 → /v1/join 返回的名称 → host:port。
     // 旧版本会把地址写进名称，遇到与地址或端点相同的名称时当作未命名处理，避免历史数据看不了探测名称。
     std::string displayName(const SavedServer& server,std::map<std::string,Status>::const_iterator status) const {
@@ -140,7 +199,7 @@ class AndroidMod {
     void dismiss() {
         bool wasOpen=open;open=form=confirm=false;pressed=-1;hits.clear();
         // 关闭时释放逐帧 Bitmap，重新打开后由探测流程重新注册。
-        if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);pl::input::hideKeyboard();}
+        if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowImages();latencyProbe.pause();pl::input::hideKeyboard();}
     }
     void openFromHome() {
         if(!active)return;auto state=homeUiState();
@@ -209,15 +268,25 @@ class AndroidMod {
             if(response&&parseDiscovery(std::string_view(reinterpret_cast<const char*>(response.data.data()),response.data.size()),status)){saveBytes(cache/(cacheName(key)+".json"),response.data);pruneCache();}
             else status.error=response.error.empty()?"服务器资料格式无效":response.error;
             status.pending=false;
-            bool selectedNow{};
-            {std::lock_guard lock(mutex);if(!current(task))continue;statuses[server.id]=status;selectedNow=selected==server.id;}
-            if(selectedNow) {
-                ImageReference logo,banner;if(status.visual){logo=status.visual->logo;banner=status.visual->introImage;}
-                if(!server.logoUrl.empty())logo={"url",server.logoUrl};if(!server.introImageUrl.empty())banner={"url",server.introImageUrl};
-                GifAnimation logoFrames,bannerFrames;
-                auto lp=image(logo,false,logoFrames);if(!active.load())break;auto bp=image(banner,true,bannerFrames);if(!active.load())break;
+            bool selectedNow{},visible{};
+            {std::lock_guard lock(mutex);if(!current(task))continue;statuses[server.id]=status;selectedNow=selected==server.id;visible=open;}
+            ImageReference logo,banner;if(status.visual){logo=status.visual->logo;banner=status.visual->introImage;}
+            if(!server.logoUrl.empty())logo={"url",server.logoUrl};if(!server.introImageUrl.empty())banner={"url",server.introImageUrl};
+            // 行图标只认这台服务器自己的图；选中项的详情横幅才需要单独解码。
+            const bool rowLogo=(logo.type=="url"||logo.type=="base64")&&!logo.value.empty();
+            GifAnimation logoFrames,bannerFrames;Pixels lp,bp;
+            if(rowLogo||selectedNow){lp=image(logo,false,logoFrames);if(!active.load())break;}
+            if(selectedNow){bp=image(banner,true,bannerFrames);if(!active.load())break;}
+            {
                 std::lock_guard lock(mutex);
-                if(current(task)&&selected==server.id){
+                if(!current(task))continue;
+                // 行内只保留静态首帧：整页列表不会同时动画，只有选中项的详情可以播 GIF。
+                // 列表关闭时不注册行图标，避免 dismiss() 清空后又被后台线程补回来。
+                if(rowLogo&&visible){
+                    if(logoFrames.valid()&&logoFrames.frameCount()>0)registerRowImage("sle.row."+server.id,logoFrames.frame(0),logoFrames.width,logoFrames.height);
+                    else if(lp)registerRowImage("sle.row."+server.id,lp.rgba,lp.width,lp.height);
+                }
+                if(selectedNow&&selected==server.id){
                     clearAnimation(logoAnimation);clearAnimation(bannerAnimation);
                     logoReady=lp&&registerHomeUiImage("sle.selected.logo",lp.rgba,lp.width,lp.height);
                     bannerReady=bp&&registerHomeUiImage("sle.selected.banner",bp.rgba,bp.width,bp.height);
@@ -228,6 +297,12 @@ class AndroidMod {
                     if(bannerAnimation.ready){bannerWidth=bannerAnimation.width;bannerHeight=bannerAnimation.height;}
                     else if(bannerReady){bannerWidth=bp.width;bannerHeight=bp.height;}
                 }
+            }
+            // 探测结束后为这一行触发一次 UDP 时延查询；结果缓存 15 秒，翻页或关闭列表时 pause。
+            if(visible&&active.load()&&client::validServerEndpoint(server.address,server.port)){
+                // 端口优先级与 Windows 一致：服务器 /v1/join 通告的探测端口优先，其次配置里的默认值。
+                int echoPort=udpProbePort;if(status.visual&&status.visual->udpProbePort>0)echoPort=status.visual->udpProbePort;
+                latencyProbe.request(endpointKey(server.address,server.port),server.address,server.port,echoPort);
             }
         }
     }
@@ -243,7 +318,7 @@ class AndroidMod {
         // 探测结果不会写回 servers.json，因此失败时已有名称不会被改掉。
         s.name=name;s.address=parsed.host;s.port=parsed.port;auto id=store.upsert(s);
         if(id.empty()||!store.save()){notice="保存失败，请检查存储空间";return;}
-        selected=id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);
+        selected=id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowImage("sle.row."+id);
         form=false;notice="已保存";pl::input::hideKeyboard();enqueue(*store.get(id));
     }
     void act(const Hit& hit) {
@@ -251,8 +326,8 @@ class AndroidMod {
         case 1:refresh();notice="已排队查询全部服务器";break;
         case 2:newForm({});break;
         case 3:dismiss();break;
-        case 4:if(page>0)--page;break;
-        case 5:++page;break;
+        case 4:if(page>0)--page;latencyProbe.pause();break;
+        case 5:++page;latencyProbe.pause();break;
         case 6:selected=hit.id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);if(auto s=ServerStore::getInstance().get(selected))enqueue(*s);break;
         case 7:save();break;
         case 8:form=false;confirm=false;pl::input::hideKeyboard();break;
@@ -260,7 +335,8 @@ class AndroidMod {
         case 10:focus=0;nameEdit.end(name);pl::input::showKeyboard();break;
         case 11:focus=1;addressEdit.end(address);pl::input::showKeyboard();break;
         case 12:if(!selected.empty())newForm(selected);break;
-        case 13:++generations[editId];std::erase_if(tasks,[&](const auto& t){return t.server.id==editId;});ServerStore::getInstance().remove(editId);ServerStore::getInstance().save();statuses.erase(editId);selected.clear();logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);form=confirm=false;break;
+        case 14:if(!hit.id.empty())newForm(hit.id);break;
+        case 13:++generations[editId];std::erase_if(tasks,[&](const auto& t){return t.server.id==editId;});ServerStore::getInstance().remove(editId);ServerStore::getInstance().save();statuses.erase(editId);clearRowImage("sle.row."+editId);selected.clear();logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);form=confirm=false;break;
         }
     }
     bool touch(const pl::input::TouchEvent& event) {
@@ -301,6 +377,8 @@ class AndroidMod {
                 auto text=[&](float x,float y,std::string value,float size=16,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=x*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
                 auto button=[&](float x,float y,float w,std::string label,int action,std::string id=std::string{}){rect(x,y,w,36,0xff424242);text(x+10,y+8,std::move(label),16);hits.push_back({x,y,w,36,action,std::move(id)});};
                 auto image=[&](const char* id,float x,float y,float w,float h,int iw,int ih){float r=std::min(w/iw,h/ih);commands.push_back({.type=pl::modmenu::DrawCommandType::Image,.x=(x+(w-iw*r)/2)*scale,.y=(y+(h-ih*r)/2)*scale,.w=iw*r*scale,.h=ih*r*scale,.color=0xffffffff,.imageId=id});};
+                // 右侧信息列（玩家数/UDP 时延/版本）右对齐：Home 覆盖层只有左对齐，先估算宽度再反推起点。
+                auto rightText=[&](float rightEdge,float y,std::string value,float size,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=(rightEdge-textAdvance(value,size))*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
                 rect(0,0,viewWidth,viewHeight,0xff1c201e);float left=20,right=viewWidth-20;
                 text(left,16,"服务器列表",24);button(right-280,16,80,"刷新",1);button(right-190,16,90,"添加",2);button(right-90,16,90,"关闭",3);
                 if(form){
@@ -316,16 +394,35 @@ class AndroidMod {
                     auto servers=ServerStore::getInstance().list();int rows=std::max(1,static_cast<int>((viewHeight-245)/64));int pages=std::max(1,(static_cast<int>(servers.size())+rows-1)/rows);page=std::clamp(page,0,pages-1);
                     if(servers.empty())text(left+20,100,"还没有服务器，点击右上角“添加”开始。",19);
                     for(int row=0;row<rows;++row){auto index=page*rows+row;if(index>=static_cast<int>(servers.size()))break;const auto& s=servers[index];float y=65+row*64.f;
-                        rect(left,y,right-left,58,s.id==selected?0xff44633b:0xe03a403c);
-                        std::string logoId=s.id==selected?animationId(logoAnimation):std::string{};
-                        image(logoId.empty()?(s.id==selected&&logoReady?"sle.selected.logo":"sle.default.logo"):logoId.c_str(),left+6,y+5,48,48,
-                            logoId.empty()?(s.id==selected&&logoReady?logoWidth:64):logoAnimation.width,
-                            logoId.empty()?(s.id==selected&&logoReady?logoHeight:64):logoAnimation.height);
+                        const float editX=right-35,columnRight=editX-8;
+                        rect(left,y,editX-left,58,s.id==selected?0xff44633b:0xe03a403c);
+                        // 行图标：该服务器自己的静态首帧 → 选中项动画 → 选中项静图 → 默认图标。
+                        std::string frameId=selected==s.id?animationId(logoAnimation):std::string{};
+                        std::string rowId="sle.row."+s.id;auto ownImage=rowImages.find(rowId);
+                        std::string logoId="sle.default.logo";int logoW=64,logoH=64;
+                        if(!frameId.empty()){logoId=frameId;logoW=logoAnimation.width;logoH=logoAnimation.height;}
+                        else if(ownImage!=rowImages.end()){logoId=rowId;logoW=ownImage->second.width;logoH=ownImage->second.height;ownImage->second.used=steadyMillis();}
+                        else if(selected==s.id&&logoReady){logoId="sle.selected.logo";logoW=logoWidth;logoH=logoHeight;}
+                        image(logoId.c_str(),left+6,y+5,48,48,logoW,logoH);
                         auto status=statuses.find(s.id);text(left+66,y+4,fit(displayName(s,status),26),18);
-                        text(left+66,y+32,fit(client::displayAddress(s.address,s.port),48),13,0xffcccccc);
-                        std::string detail="未查询";if(!client::validServerEndpoint(s.address,s.port))detail="地址无效，请编辑";
-                        else if(status!=statuses.end()){const auto& v=status->second;detail=v.pending?"查询中…":!v.error.empty()?"查询失败（可重试）":v.version+"  "+std::to_string(v.players)+"/"+std::to_string(v.capacity);}
-                        text(right-230,y+18,fit(detail,22),14);hits.push_back({left,y,right-left,58,6,s.id});
+                        text(left+66,y+32,fit(client::displayAddress(s.address,s.port),44),13,0xffcccccc);
+                        const bool addressValid=client::validServerEndpoint(s.address,s.port);
+                        std::string population="未查询";std::uint32_t populationColor=0xffebebeb;
+                        if(!addressValid){population="请编辑地址";populationColor=0xffffc0c0;}
+                        else if(status!=statuses.end()){const auto& v=status->second;population=v.pending?"查询中…":!v.error.empty()?"查询失败":std::to_string(v.players)+"/"+std::to_string(v.capacity);}
+                        rightText(columnRight,y+4,fit(population,12),13,populationColor);
+                        // UDP 时延与 Windows 同文案同配色：<ms> ms / UDP 查询中 / UDP 未响应 / 地址无效。
+                        int ms=-1;bool latencyPending{};
+                        if(addressValid)if(auto latency=latencyProbe.get(endpointKey(s.address,s.port))){ms=latency->ms;latencyPending=latency->pending;}
+                        const std::string ping=!addressValid?"地址无效":ms>=0?(ms>=1000?"1000+ ms":std::to_string(ms)+" ms"):latencyPending?"UDP 查询中":"UDP 未响应";
+                        const int latencyBand=addressValid?sle::udp::band(ms):0;
+                        rightText(columnRight,y+22,fit(ping,12),13,latencyBand==1?0xff81e65e:latencyBand==2?0xffffde56:latencyBand==3?0xffff7f73:0xffcacaca);
+                        if(status!=statuses.end()&&!status->second.version.empty())rightText(columnRight,y+40,fit(status->second.version,16),13,0xffe1e1e1);
+                        // 行尾铅笔按钮：76 灰底 + 1px 分隔线 + 8 个 3x3 像素斜线；点击直接编辑这一行。
+                        rect(editX,y,35,58,0xff4c4c4c);rect(editX,y,1,58,0xff787878);
+                        for(int pen=0;pen<8;++pen)rect(editX+12+pen,y+34-pen,3,3,0xffeeeeee);
+                        hits.push_back({editX,y,35,58,14,s.id});
+                        hits.push_back({left,y,editX-left,58,6,s.id});
                     }
                     float dy=viewHeight-170;rect(left,dy,right-left,110,0xd0252c27);
                     if(auto s=ServerStore::getInstance().get(selected)){
@@ -353,7 +450,7 @@ public:
         auto configPath=context.configDir()/"config.json";Config config;
         if(std::filesystem::exists(configPath)){std::ifstream file(configPath);auto j=nlohmann::json::parse(file,nullptr,false);if(!j.is_object())return false;config=pl::reflection::deserialize<Config>(j);}
         else if(!pl::config::writeConfig(configPath,pl::config::defaultJson(config)))return false;
-        moduleEnabled=config.enabled;plainHttp=config.allowPlainHttpFallback;pruneCache();
+        moduleEnabled=config.enabled;plainHttp=config.allowPlainHttpFallback;udpProbePort=config.udpProbePort;pruneCache();
         Dl_info info{};if(!dladdr(reinterpret_cast<void*>(&setJavaVm),&info)||!dlopen(info.dli_fname,RTLD_NOW|RTLD_NODELETE))return false;
         __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Loaded Android ARM64 port; %zu servers; launcher 1.6.0 SDK 5d108da; restart game after updates",store.list().size());
         if(config.autoRefresh)refresh();return true;
@@ -369,12 +466,14 @@ public:
             pl::modmenu::unregisterModule(Module);active=false;return false;
         }
         if(!inputRegistered){pl::input::registerKeyCallback([this](const auto& e){return key(e);});inputRegistered=true;}
+        latencyProbe.start();
         for(int i=0;i<2;++i)workers.emplace_back([this]{worker();});renderer=std::thread([this]{render();});
         __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Enabled home-screen server entry and two workers");return true;
     }
     bool disable(){
         active=false;changed.notify_all();if(renderer.joinable())renderer.join();for(auto& t:workers)if(t.joinable())t.join();workers.clear();
-        {std::lock_guard lock(mutex);open=form=false;hits.clear();tasks.clear();}
+        {std::lock_guard lock(mutex);open=form=false;hits.clear();tasks.clear();rowImages.clear();rowImageBytes=0;}
+        latencyProbe.stop();
         pl::input::hideKeyboard();closeHomeUi();pl::modmenu::unregisterModule(Module);return ServerStore::getInstance().save();
     }
     bool unload(){return true;}

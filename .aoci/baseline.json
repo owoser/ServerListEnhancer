@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-17T06:57:11Z",
-  "updated_at": "2026-11-17T13:50:55Z",
+  "updated_at": "2026-11-17T14:43:21Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -23,9 +23,9 @@
     },
     "README.md": {
       "role": "index",
-      "sha256": "f65fdf7fc26f0a8545eb815e9b9e8cedc50683545b3df1c3895f449163b8905a",
-      "size": 5102,
-      "normalized_sha256": "f65fdf7fc26f0a8545eb815e9b9e8cedc50683545b3df1c3895f449163b8905a"
+      "sha256": "488d4d675457fb186bde2df9165b8e410c4e08c84b9e16be902aa8a3358c9fda",
+      "size": 5151,
+      "normalized_sha256": "488d4d675457fb186bde2df9165b8e410c4e08c84b9e16be902aa8a3358c9fda"
     },
     "THIRD_PARTY_NOTICES.md": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "android/java/cn/owoser/sle/HomeOverlay.java": {
       "role": "index",
-      "sha256": "3dd2a507e3a017c173c7cf5d022f134e7e8e18f95ad5c63e21fbf3ecd79f06ca",
-      "size": 24689,
-      "normalized_sha256": "3dd2a507e3a017c173c7cf5d022f134e7e8e18f95ad5c63e21fbf3ecd79f06ca"
+      "sha256": "ffd87c5def092f083ac933711f3b7d5d63c653fc6d945c40e7e797e92e9c80cc",
+      "size": 33630,
+      "normalized_sha256": "ffd87c5def092f083ac933711f3b7d5d63c653fc6d945c40e7e797e92e9c80cc"
     },
     "android/manifest.json.in": {
       "role": "index",
@@ -65,9 +65,9 @@
     },
     "android/src/AndroidMod.cpp": {
       "role": "index",
-      "sha256": "7b5fb341df98d997c019e60755963759458b63e794a120950d7e511f70c35b05",
-      "size": 21273,
-      "normalized_sha256": "7b5fb341df98d997c019e60755963759458b63e794a120950d7e511f70c35b05"
+      "sha256": "edb70ae408ea301b1c91f73b076e134063844b8e6d20794616b5185fdda0ac2e",
+      "size": 34255,
+      "normalized_sha256": "edb70ae408ea301b1c91f73b076e134063844b8e6d20794616b5185fdda0ac2e"
     },
     "android/src/AndroidPlatform.cpp": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "android/src/Config.h": {
       "role": "index",
-      "sha256": "7a3b4ce181f4ef31f63a2ad273c907f69c4c5406b5f2fb60a5b5c901a106e877",
-      "size": 936,
-      "normalized_sha256": "7a3b4ce181f4ef31f63a2ad273c907f69c4c5406b5f2fb60a5b5c901a106e877"
+      "sha256": "3f05a5cbbf99b7aaf262135b3b6b278634217f9d9fbc3d878358e3160d5bb885",
+      "size": 1083,
+      "normalized_sha256": "3f05a5cbbf99b7aaf262135b3b6b278634217f9d9fbc3d878358e3160d5bb885"
     },
     "android/src/Discovery.h": {
       "role": "index",
@@ -99,6 +99,12 @@
       "size": 478,
       "normalized_sha256": "235fb4c4ea77dcae0db67fd96a2cf316d06f70d957fb90f7569c11ffadfb78b0"
     },
+    "android/src/GifAnimation.h": {
+      "role": "index",
+      "sha256": "6c7d5606ee05d1913f30dd9b14b67c580d7cec7723c58371c461e793a9759712",
+      "size": 16295,
+      "normalized_sha256": "6c7d5606ee05d1913f30dd9b14b67c580d7cec7723c58371c461e793a9759712"
+    },
     "android/src/HomeUi.cpp": {
       "role": "index",
       "sha256": "e56a6e9c039ee1c8a032b22039ab6a7b465d6d57da670c2a916d96c2648c859e",
@@ -111,11 +117,17 @@
       "size": 1119,
       "normalized_sha256": "23712dc1ae3dd74b753a6d0c97bfeb99ff5f2fe9fa32632c35fe7832fa674c60"
     },
+    "android/src/LatencyProbe.h": {
+      "role": "index",
+      "sha256": "591d561bbd74f7dd0f1eb5de75e0959b44f9706b1f7167bee78590d01fe6149c",
+      "size": 6782,
+      "normalized_sha256": "591d561bbd74f7dd0f1eb5de75e0959b44f9706b1f7167bee78590d01fe6149c"
+    },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "42e5d18d2cf1ea5791b1c1b9a7d5e41aa2b0abf83fc65c37f456583a383f6d37",
-      "size": 32814,
-      "normalized_sha256": "42e5d18d2cf1ea5791b1c1b9a7d5e41aa2b0abf83fc65c37f456583a383f6d37"
+      "sha256": "d36d8d6ea4db07c5c4125e4b8b1abd434522733f6c4629ac1aeb054b798ab2e6",
+      "size": 33642,
+      "normalized_sha256": "d36d8d6ea4db07c5c4125e4b8b1abd434522733f6c4629ac1aeb054b798ab2e6"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -131,9 +143,9 @@
     },
     "docs/android.md": {
       "role": "index",
-      "sha256": "808f640a5faa4abecf4139ed881cd86cafc434d82182daac14ec722870363d1d",
-      "size": 6989,
-      "normalized_sha256": "808f640a5faa4abecf4139ed881cd86cafc434d82182daac14ec722870363d1d"
+      "sha256": "41f99dd92e7bdba8abceaf3e7faa737bcb0e50a90f63ccb97a5ee7af2a6a31fd",
+      "size": 8412,
+      "normalized_sha256": "41f99dd92e7bdba8abceaf3e7faa737bcb0e50a90f63ccb97a5ee7af2a6a31fd"
     },
     "docs/discovery-images.md": {
       "role": "index",
