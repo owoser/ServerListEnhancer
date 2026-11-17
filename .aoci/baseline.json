@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-17T06:57:11Z",
-  "updated_at": "2026-11-17T10:27:45Z",
+  "updated_at": "2026-11-17T13:50:55Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -23,9 +23,9 @@
     },
     "README.md": {
       "role": "index",
-      "sha256": "5ff2881adc3f24d44f70f635b157c99e06a2e22960169eacbc53bb86abbbb015",
-      "size": 4998,
-      "normalized_sha256": "5ff2881adc3f24d44f70f635b157c99e06a2e22960169eacbc53bb86abbbb015"
+      "sha256": "f65fdf7fc26f0a8545eb815e9b9e8cedc50683545b3df1c3895f449163b8905a",
+      "size": 5102,
+      "normalized_sha256": "f65fdf7fc26f0a8545eb815e9b9e8cedc50683545b3df1c3895f449163b8905a"
     },
     "THIRD_PARTY_NOTICES.md": {
       "role": "index",
@@ -35,21 +35,39 @@
     },
     "android/CMakeLists.txt": {
       "role": "index",
-      "sha256": "39a59845600dcd63c1fe44dc253b65d266cc85453cba4795805683df6f8f29f4",
-      "size": 3704,
-      "normalized_sha256": "39a59845600dcd63c1fe44dc253b65d266cc85453cba4795805683df6f8f29f4"
+      "sha256": "62f2df6924c0ba73278b66ceeebb2926fd630660d7323cef7c7d2554b644e8f2",
+      "size": 3719,
+      "normalized_sha256": "62f2df6924c0ba73278b66ceeebb2926fd630660d7323cef7c7d2554b644e8f2"
+    },
+    "android/java/cn/owoser/sle/HomeOverlay.java": {
+      "role": "index",
+      "sha256": "3dd2a507e3a017c173c7cf5d022f134e7e8e18f95ad5c63e21fbf3ecd79f06ca",
+      "size": 24689,
+      "normalized_sha256": "3dd2a507e3a017c173c7cf5d022f134e7e8e18f95ad5c63e21fbf3ecd79f06ca"
     },
     "android/manifest.json.in": {
       "role": "index",
-      "sha256": "cbd7965b01cb063bf611091c11342c1e15e271d53a353aae5a665960f02b0a03",
-      "size": 236,
-      "normalized_sha256": "cbd7965b01cb063bf611091c11342c1e15e271d53a353aae5a665960f02b0a03"
+      "sha256": "74242ce168cf512f8e3bac1b2277f2e7c68e86e7772be9aa2b61e4a4df71531a",
+      "size": 509,
+      "normalized_sha256": "74242ce168cf512f8e3bac1b2277f2e7c68e86e7772be9aa2b61e4a4df71531a"
+    },
+    "android/resources/minecraft_resource_packs/sle_home/manifest.json": {
+      "role": "index",
+      "sha256": "972a40a58adaf99ee773a4fd46898da8f807c2770b85f1faf42bee75122f4a40",
+      "size": 536,
+      "normalized_sha256": "972a40a58adaf99ee773a4fd46898da8f807c2770b85f1faf42bee75122f4a40"
+    },
+    "android/resources/minecraft_resource_packs/sle_home/ui/start_screen.json": {
+      "role": "index",
+      "sha256": "2eaf69fa0b35997dc8a332e0b1f4543be8a3accee04d8d05ba8c609df24ea0d1",
+      "size": 1376,
+      "normalized_sha256": "2eaf69fa0b35997dc8a332e0b1f4543be8a3accee04d8d05ba8c609df24ea0d1"
     },
     "android/src/AndroidMod.cpp": {
       "role": "index",
-      "sha256": "0e70f79c6e5b72d200132d27420e347a306b125420fc89dd96aa5920126b40c4",
-      "size": 20794,
-      "normalized_sha256": "0e70f79c6e5b72d200132d27420e347a306b125420fc89dd96aa5920126b40c4"
+      "sha256": "7b5fb341df98d997c019e60755963759458b63e794a120950d7e511f70c35b05",
+      "size": 21273,
+      "normalized_sha256": "7b5fb341df98d997c019e60755963759458b63e794a120950d7e511f70c35b05"
     },
     "android/src/AndroidPlatform.cpp": {
       "role": "index",
@@ -81,11 +99,23 @@
       "size": 478,
       "normalized_sha256": "235fb4c4ea77dcae0db67fd96a2cf316d06f70d957fb90f7569c11ffadfb78b0"
     },
+    "android/src/HomeUi.cpp": {
+      "role": "index",
+      "sha256": "e56a6e9c039ee1c8a032b22039ab6a7b465d6d57da670c2a916d96c2648c859e",
+      "size": 29320,
+      "normalized_sha256": "e56a6e9c039ee1c8a032b22039ab6a7b465d6d57da670c2a916d96c2648c859e"
+    },
+    "android/src/HomeUi.h": {
+      "role": "index",
+      "sha256": "23712dc1ae3dd74b753a6d0c97bfeb99ff5f2fe9fa32632c35fe7832fa674c60",
+      "size": 1119,
+      "normalized_sha256": "23712dc1ae3dd74b753a6d0c97bfeb99ff5f2fe9fa32632c35fe7832fa674c60"
+    },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c3f16baf18720c82aff6ca08426e41a68f0ff563853ded2af9b7451b59936185",
-      "size": 30411,
-      "normalized_sha256": "c3f16baf18720c82aff6ca08426e41a68f0ff563853ded2af9b7451b59936185"
+      "sha256": "42e5d18d2cf1ea5791b1c1b9a7d5e41aa2b0abf83fc65c37f456583a383f6d37",
+      "size": 32814,
+      "normalized_sha256": "42e5d18d2cf1ea5791b1c1b9a7d5e41aa2b0abf83fc65c37f456583a383f6d37"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -101,9 +131,9 @@
     },
     "docs/android.md": {
       "role": "index",
-      "sha256": "6e6a292cadb856b5b42ed2e4828da75c9c7d629860620d016fe3a5cdf3609a6e",
-      "size": 5739,
-      "normalized_sha256": "6e6a292cadb856b5b42ed2e4828da75c9c7d629860620d016fe3a5cdf3609a6e"
+      "sha256": "808f640a5faa4abecf4139ed881cd86cafc434d82182daac14ec722870363d1d",
+      "size": 6989,
+      "normalized_sha256": "808f640a5faa4abecf4139ed881cd86cafc434d82182daac14ec722870363d1d"
     },
     "docs/discovery-images.md": {
       "role": "index",
@@ -153,9 +183,9 @@
     },
     "scripts/package-android.ps1": {
       "role": "index",
-      "sha256": "ca57e51c26c3a6375854159d55f16528bc117bf34072e15e8a002c9c8436a400",
-      "size": 9078,
-      "normalized_sha256": "ca57e51c26c3a6375854159d55f16528bc117bf34072e15e8a002c9c8436a400"
+      "sha256": "90802dcd161f41932403c8dde42641aff69a558dd9fdd939d9edd4d415c4bbb6",
+      "size": 11950,
+      "normalized_sha256": "90802dcd161f41932403c8dde42641aff69a558dd9fdd939d9edd4d415c4bbb6"
     },
     "scripts/package-ui-gif.ps1": {
       "role": "index",
