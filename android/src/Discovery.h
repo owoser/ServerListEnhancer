@@ -1,6 +1,7 @@
 #pragma once
 #include "AddressParser.h"
 #include "common/DiscoveryVisual.h"
+#include <chrono>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <optional>
@@ -12,6 +13,7 @@ struct Status {
     int players{-1}, capacity{-1};
     std::optional<DiscoveryVisual> visual;
     bool pending{};
+    std::chrono::steady_clock::time_point refreshedAt{};
 };
 inline void bindEndpoint(Status& status,std::string endpoint) {
     if(status.endpoint!=endpoint){status=Status{};status.endpoint=std::move(endpoint);}

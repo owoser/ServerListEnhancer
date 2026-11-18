@@ -64,6 +64,27 @@ float textAdvance(std::string_view text,float size) {
     }
     return width;
 }
+// 文字宽度：优先用 Home 覆盖层绘制字体的实测宽度（measureText），失败时回退到上面的估算。
+// 光标定位、按钮居中、右侧信息列都依赖这个值，实测可避免长文本误差累积成明显空隙。
+float textWidth(std::string_view text,float size) {
+    if(text.empty())return 0.f;
+    static std::mutex cacheMutex;
+    static std::map<std::string,float> cache;
+    std::string key=std::to_string(static_cast<long long>(size*100.f+.5f));key.push_back('\x1f');key.append(text);
+    {
+        std::lock_guard lock(cacheMutex);
+        auto it=cache.find(key);
+        if(it!=cache.end())return it->second;
+        if(cache.size()>=512)cache.clear();
+    }
+    const float measured=measureHomeText(text,size);
+    if(measured<0.f)return textAdvance(text,size);
+    {
+        std::lock_guard lock(cacheMutex);
+        if(cache.size()<512)cache.emplace(std::move(key),measured);
+    }
+    return measured;
+}
 // 行图标在真机上只占 48 个设计单位，统一按长边 ≤64 px 保存，避免大图挤爆帧预算。
 constexpr int RowImageSide=64;
 std::pair<int,int> rowImageSize(int width,int height) {
@@ -110,7 +131,7 @@ class AndroidMod {
     std::vector<std::thread> workers;
     std::thread renderer;
     std::atomic<bool> active{};
-    bool inputRegistered{},moduleEnabled{true},open{},form{},confirm{},plainHttp{true};
+    bool inputRegistered{},moduleEnabled{true},open{},form{},confirm{},plainHttp{true},autoRefresh{true},autoRefreshPending{};
     bool logoReady{},bannerReady{};
     int logoWidth{64},logoHeight{64},bannerWidth{960},bannerHeight{320};
     float scale{1},viewWidth{800},viewHeight{480};
@@ -335,8 +356,8 @@ class AndroidMod {
         if(!active)return;auto state=homeUiState();
         {std::lock_guard lock(mutex);
         if(!moduleEnabled||!state.ready||!state.home||state.blocked){submitHomeUiFrame(0,{},state.session);return;}
-        open=true;form=confirm=false;pressed=-1;hits.clear();}
-        // 打开列表不再自动查询全部服务器：资料查询只由刷新按钮/保存后的完整查询发起。
+        open=true;form=confirm=false;pressed=-1;hits.clear();autoRefreshPending=true;}
+        // 首次打开或缓存过期时自动补齐资料与图片；行点击仍然只做选中，不发查询。
     }
 
     // imagesOnly 只做“选中即出图”：不查 /v1/join、不写 statuses、不置 pending。
@@ -349,6 +370,18 @@ class AndroidMod {
         changed.notify_one();
     }
     void refresh() {for(const auto& s:ServerStore::getInstance().list())enqueue(s);}
+    // 打开列表时自动补齐：只查没有结果、失败过或超过 60 秒未更新的服务器，正在查询的跳过。
+    void refreshStale() {
+        const auto now=std::chrono::steady_clock::now();
+        int queued=0;
+        for(const auto& s:ServerStore::getInstance().list()){
+            auto it=statuses.find(s.id);
+            if(it!=statuses.end()&&it->second.pending)continue;
+            if(it!=statuses.end()&&it->second.refreshedAt.time_since_epoch().count()!=0&&now-it->second.refreshedAt<std::chrono::seconds(60))continue;
+            enqueue(s);++queued;
+        }
+        if(queued)__android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Opening list: queued %d server(s) for refresh",queued);
+    }
     bool current(const Task& task) {
         auto server=ServerStore::getInstance().get(task.server.id);
         return active&&generations[task.server.id]==task.generation&&server&&server->address==task.server.address&&server->port==task.server.port;
@@ -401,7 +434,7 @@ class AndroidMod {
                 if(!active.load())break;
                 if(response&&parseDiscovery(std::string_view(reinterpret_cast<const char*>(response.data.data()),response.data.size()),status)){saveBytes(cache/(cacheName(key)+".json"),response.data);pruneCache();}
                 else status.error=response.error.empty()?"服务器资料格式无效":response.error;
-                status.pending=false;
+                status.pending=false;status.refreshedAt=std::chrono::steady_clock::now();
             }
             bool selectedNow{},visible{};
             {std::lock_guard lock(mutex);if(!current(task))continue;if(!task.imagesOnly)statuses[server.id]=status;selectedNow=selected==server.id;visible=open;}
@@ -514,14 +547,15 @@ class AndroidMod {
             const bool allowed=display.ready&&display.home&&!display.blocked&&moduleEnabled&&display.width>0&&display.height>0;
             if(!allowed)dismiss();
             else if(open)mode=2;
+            if(mode==2&&autoRefreshPending){autoRefreshPending=false;refreshStale();}
             if(mode==2){
                 scale=std::max(.5f,std::min(display.width/800.f,display.height/480.f));viewWidth=display.width/scale;viewHeight=display.height/scale;
                 auto rect=[&](float x,float y,float w,float h,std::uint32_t color){commands.push_back({.type=pl::modmenu::DrawCommandType::RectFilled,.x=x*scale,.y=y*scale,.w=w*scale,.h=h*scale,.color=color});};
                 auto text=[&](float x,float y,std::string value,float size=16,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=x*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
-                auto button=[&](float x,float y,float w,std::string label,int action,std::string id=std::string{}){const float labelWidth=textAdvance(label,16);rect(x,y,w,36,0xff424242);text(x+(w-labelWidth)/2,y+8,std::move(label),16);hits.push_back({x,y,w,36,action,std::move(id)});};
+                auto button=[&](float x,float y,float w,std::string label,int action,std::string id=std::string{}){const float labelWidth=textWidth(label,16);rect(x,y,w,36,0xff424242);text(x+(w-labelWidth)/2,y+8,std::move(label),16);hits.push_back({x,y,w,36,action,std::move(id)});};
                 auto image=[&](const char* id,float x,float y,float w,float h,int iw,int ih){float r=std::min(w/iw,h/ih);commands.push_back({.type=pl::modmenu::DrawCommandType::Image,.x=(x+(w-iw*r)/2)*scale,.y=(y+(h-ih*r)/2)*scale,.w=iw*r*scale,.h=ih*r*scale,.color=0xffffffff,.imageId=id});};
                 // 右侧信息列（玩家数/UDP 时延/版本）右对齐：Home 覆盖层只有左对齐，先估算宽度再反推起点。
-                auto rightText=[&](float rightEdge,float y,std::string value,float size,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=(rightEdge-textAdvance(value,size))*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
+                auto rightText=[&](float rightEdge,float y,std::string value,float size,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=(rightEdge-textWidth(value,size))*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
                 rect(0,0,viewWidth,viewHeight,0xff1c201e);float left=20,right=viewWidth-20;
                 text(left,16,"服务器列表",24);button(right-280,16,80,"刷新",1);button(right-190,16,90,"添加",2);button(right-90,16,90,"关闭",3);
                 if(form){
@@ -532,11 +566,11 @@ class AndroidMod {
                         const bool caretOn=(steadyMillis()/500)%2==0;
                         text(x+20,112,"名称（可留空）",14);rect(x+20,135,520,38,focus==0?0xff486045:0xff454545);
                         const std::string nameText=fit(name.empty()?"点击输入名称":name,28);text(x+30,142,nameText);
-                        if(focus==0&&caretOn)rect(std::min(name.empty()?x+30:x+30+textAdvance(nameText,28),x+534),142,2,28,0xffffffff);
+                        if(focus==0&&caretOn)rect(std::min(x+30+(name.empty()?0.f:textWidth(nameText,28)),x+534),142,2,28,0xffffffff);
                         hits.push_back({x+20,135,520,38,10,{}});
                         text(x+20,185,"地址：域名/IP:端口，默认 19132",14);rect(x+20,209,520,38,focus==1?0xff486045:0xff454545);
                         const std::string addressText=fit(address.empty()?"点击输入 play.example.com:19132":address,40);text(x+30,216,addressText,16);
-                        if(focus==1&&caretOn)rect(std::min(address.empty()?x+30:x+30+textAdvance(addressText,16),x+534),216,2,16,0xffffffff);
+                        if(focus==1&&caretOn)rect(std::min(x+30+(address.empty()?0.f:textWidth(addressText,16)),x+534),216,2,16,0xffffffff);
                         hits.push_back({x+20,209,520,38,11,{}});
                         button(x+20,275,120,"保存",7);button(x+150,275,120,"取消",8);if(!editId.empty())button(x+400,275,140,"删除",9);
                         text(x+20,325,fit(notice,42),14,0xffffcb80);
@@ -608,7 +642,7 @@ public:
         moduleEnabled=config.enabled;plainHttp=config.allowPlainHttpFallback;udpProbePort=config.udpProbePort;pruneCache();
         Dl_info info{};if(!dladdr(reinterpret_cast<void*>(&setJavaVm),&info)||!dlopen(info.dli_fname,RTLD_NOW|RTLD_NODELETE))return false;
         __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Loaded Android ARM64 port; %zu servers; launcher 1.6.0 SDK 5d108da; restart game after updates",store.list().size());
-        if(config.autoRefresh)refresh();return true;
+        autoRefresh=config.autoRefresh;if(autoRefresh)refresh();return true;
     }
     bool enable(){
         active=true;

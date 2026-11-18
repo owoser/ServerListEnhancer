@@ -144,7 +144,7 @@ public:
 struct Bridge {
     JavaVM* vm{};
     jclass type{}; // Global ref retains its DexClassLoader as well.
-    jmethodID install{}, query{}, frame{}, image{}, close{}, request{};
+    jmethodID install{}, query{}, frame{}, image{}, close{}, request{}, measure{};
     std::function<void()> open;
     std::function<bool(float, float, int)> touch;
     std::function<bool()> back;
@@ -240,8 +240,16 @@ bool interceptLaunchUri(JNIEnv* env, jstring uri) noexcept {
     }
 }
 
+void logLaunchUriCall() noexcept {
+    const long long count = gJniVoidCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 32 || count % 32 == 0) {
+        __android_log_print(ANDROID_LOG_INFO, LogTag, "launchUri call #%lld", count);
+    }
+}
+
 void JNICALL hookCallVoidMethodV(JNIEnv* env, jobject obj, jmethodID method, va_list args) {
     if (method != nullptr && method == gLaunchUriMethod.load(std::memory_order_acquire) && obj != nullptr) {
+        logLaunchUriCall();
         va_list copy;
         va_copy(copy, args);
         jobject arg0 = va_arg(copy, jobject);
@@ -253,6 +261,7 @@ void JNICALL hookCallVoidMethodV(JNIEnv* env, jobject obj, jmethodID method, va_
 
 void JNICALL hookCallVoidMethodA(JNIEnv* env, jobject obj, jmethodID method, const jvalue* args) {
     if (method != nullptr && method == gLaunchUriMethod.load(std::memory_order_acquire) && obj != nullptr && args != nullptr) {
+        logLaunchUriCall();
         if (interceptLaunchUri(env, static_cast<jstring>(args[0].l))) return;
     }
     if (gOrigCallVoidMethodA) gOrigCallVoidMethodA(env, obj, method, args);
@@ -262,6 +271,7 @@ void JNICALL hookCallVoidMethod(JNIEnv* env, jobject obj, jmethodID method, ...)
     va_list args;
     va_start(args, method);
     if (method != nullptr && method == gLaunchUriMethod.load(std::memory_order_acquire) && obj != nullptr) {
+        logLaunchUriCall();
         va_list copy;
         va_copy(copy, args);
         jobject arg0 = va_arg(copy, jobject);
@@ -501,6 +511,12 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
         state->image = j.method(state->type, "image", "(Ljava/lang/String;[BII)V", true);
         state->close = j.method(state->type, "close", "()V", true);
         state->request = j.method(state->type, "openFromHomeControl", "()V", true);
+        // 可选能力：旧版 DEX 没有 measureText，解析失败时保持为空并退回 C++ 估算，不影响安装。
+        state->measure = j.env->GetStaticMethodID(state->type, "measureText", "(Ljava/lang/String;F)F");
+        if (j.env->ExceptionCheck()) {
+            j.env->ExceptionClear();
+            state->measure = nullptr;
+        }
         const JNINativeMethod natives[] = {
             {const_cast<char*>("nativeBindMainActivity"), const_cast<char*>("(Ljava/lang/Class;)Z"), reinterpret_cast<void*>(nativeBindMainActivity)},
             {const_cast<char*>("nativeOpen"), const_cast<char*>("()V"), reinterpret_cast<void*>(nativeOpen)},
@@ -614,6 +630,27 @@ bool registerHomeUiImage(std::string_view id, std::span<const unsigned char> rgb
         fail(state, "image", "unknown C++ exception");
     }
     return false;
+}
+
+// 绘制字体的真实文字宽度（设计单位）。任何 JNI 失败都返回负数表示不可用，调用方回退到估算。
+float measureHomeText(std::string_view text, float size) {
+    if (!std::isfinite(size) || size <= 0.f) return -1.f;
+    if (text.empty()) return 0.f;
+    auto state = bridge();
+    if (!usable(state) || !state->measure) return -1.f;
+    try {
+        Jni j(state->vm);
+        auto payload = j.string(text);
+        const auto width = static_cast<float>(j.env->CallStaticFloatMethod(
+            state->type, state->measure, payload, static_cast<jfloat>(size)));
+        if (j.env->ExceptionCheck()) {
+            j.env->ExceptionClear();
+            return -1.f;
+        }
+        return std::isfinite(width) && width >= 0.f ? width : -1.f;
+    } catch (...) {
+        return -1.f;
+    }
 }
 
 void closeHomeUi() {

@@ -67,6 +67,21 @@ public final class HomeOverlay {
     public static native boolean nativeTouch(float x, float y, int action);
     public static native boolean nativeBack();
 
+    /**
+     * 与列表绘制使用完全相同的字体配置测量文字宽度（ANTI_ALIAS_FLAG + Typeface.DEFAULT + max(1,size)）。
+     * Paint 不是线程安全的，这里用 synchronized 串行化，可被任意线程调用；measureText 不受 Align 影响。
+     */
+    private static final Paint MEASURE_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    public static float measureText(String text, float size) {
+        if (text == null) return -1f;
+        synchronized (MEASURE_PAINT) {
+            MEASURE_PAINT.setTypeface(Typeface.DEFAULT);
+            MEASURE_PAINT.setTextSize(Math.max(1f, size));
+            return MEASURE_PAINT.measureText(text);
+        }
+    }
+
     public static synchronized void install(String modRoot) throws Exception {
         final long epoch = ++generation;
         closed = false;

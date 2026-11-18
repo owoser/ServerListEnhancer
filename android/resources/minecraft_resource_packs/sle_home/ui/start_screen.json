@@ -13,16 +13,14 @@
         "operation": "insert_front",
         "value": [
           {
-            "sle_home_servers_button@common_buttons.hyperlink_button": {
+            "sle_home_servers_button@common_buttons.light_text_button": {
               "size": [
                 50,
                 24
               ],
               "$focus_id": "sle_home_servers_button",
               "$button_text": "服务器",
-              "property_bag": {
-                "#hyperlink": "https://server-list-enhancer.invalid/open"
-              }
+              "$pressed_button_name": "button.sle_home_entry"
             }
           },
           {

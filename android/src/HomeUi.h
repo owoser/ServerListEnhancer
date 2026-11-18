@@ -32,6 +32,8 @@ void submitHomeUiFrame(int mode, std::span<const pl::modmenu::DrawCommand> comma
 // Pixels are already decoded, tightly packed RGBA (width * height * 4 bytes).
 bool registerHomeUiImage(std::string_view id, std::span<const unsigned char> rgba,
                          int width, int height);
+// Width of text as drawn by the overlay (same Paint configuration); negative when JNI is unavailable.
+float measureHomeText(std::string_view text, float size);
 void closeHomeUi();
 
 } // namespace sle::android
