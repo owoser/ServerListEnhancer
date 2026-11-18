@@ -18,7 +18,6 @@ import android.net.Uri;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
-import android.view.PixelCopy;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -61,9 +60,7 @@ public final class HomeOverlay {
     private static boolean home;
     private static boolean queryFailureLogged;
     private static Runnable ticker;
-    private static long lastEntryProbeAt;
     private static boolean entryObservationLogged;
-    private static boolean entryProbeInFlight;
     /** 连续失去窗口焦点超过该时长才确认列表应当关闭；截图、软键盘、系统弹窗只造成短时失焦。 */
     private static final long FOCUS_GRACE_MS = 1200L;
     /** 首次延迟确认的等待时间；仍在宽限期内时按剩余预算重复确认。 */
@@ -298,6 +295,62 @@ public final class HomeOverlay {
     /** 打开入口遇到瞬时 block（焦点/启动器菜单态）时的有界重试：6 次 × 120ms ≈ 700ms。 */
     private static final int HOME_OPEN_MAX_ATTEMPTS = 6;
     private static final long HOME_OPEN_RETRY_MS = 120L;
+
+    /** 全屏像素宽度（原生触摸回调把按钮矩形换算成比例坐标用）；覆盖层尚未创建时回退到屏幕尺寸。 */
+    public static int screenWidthPx() {
+        OverlayView current = view;
+        if (current != null) {
+            int width = current.surfaceWidth();
+            if (width > 0) return width;
+        }
+        Activity owner = activity;
+        return owner == null ? 0 : owner.getResources().getDisplayMetrics().widthPixels;
+    }
+
+    /** 全屏像素高度；覆盖层尚未创建时回退到屏幕尺寸。 */
+    public static int screenHeightPx() {
+        OverlayView current = view;
+        if (current != null) {
+            int height = current.surfaceHeight();
+            if (height > 0) return height;
+        }
+        Activity owner = activity;
+        return owner == null ? 0 : owner.getResources().getDisplayMetrics().heightPixels;
+    }
+
+    private static long homeMenuCheckedAt;
+    private static boolean homeMenuCached;
+    private static java.lang.reflect.Method homeHudMethod;
+    private static java.lang.reflect.Method homePauseMethod;
+    private static java.lang.reflect.Method homeMenuMethod;
+
+    /**
+     * 当前是否停在某个菜单界面（不在世界内、不在暂停菜单），供原生触摸回调判断"首页"。
+     * 400ms 缓存，避免每次触摸都反射。
+     */
+    public static boolean gameHomeMenu() {
+        long now = SystemClock.uptimeMillis();
+        if (now - homeMenuCheckedAt < 400L) return homeMenuCached;
+        homeMenuCheckedAt = now;
+        try {
+            if (homeMenuMethod == null) {
+                ClassLoader loader = app == null ? HomeOverlay.class.getClassLoader() : app.getClassLoader();
+                Class<?> input = Class.forName("org.levimc.launcher.preloader.PreloaderInput", false, loader);
+                homeHudMethod = input.getMethod("isHudScreenOpen");
+                homePauseMethod = input.getMethod("isPauseMenuOpen");
+                homeMenuMethod = input.getMethod("isShowingMenu");
+            }
+            boolean hud = Boolean.TRUE.equals(homeHudMethod.invoke(null));
+            boolean pause = Boolean.TRUE.equals(homePauseMethod.invoke(null));
+            boolean menu = Boolean.TRUE.equals(homeMenuMethod.invoke(null));
+            // 首页与游戏列表都在 hud=false / pause=false 的菜单层；isShowingMenu 在部分界面为假，只作日志。
+            homeMenuCached = !hud && !pause;
+            Log.i(TAG, "preloader state hud=" + hud + " pause=" + pause + " menu=" + menu);
+        } catch (Throwable ignored) {
+            homeMenuCached = false;
+        }
+        return homeMenuCached;
+    }
 
     public static void openFromHomeControl() {
         if (closed) return;
@@ -717,140 +770,16 @@ public final class HomeOverlay {
         return null;
     }
 
-    private static void probeHomeEntry(float x, float y) {
-        // 抽屉或弹层刚关掉时，按钮标记这一帧可能还没画出来；落空就短时间内补采样，
-        // 免得用户必须点第二下才打开列表。
-        probeHomeEntry(x, y, 2, false);
-    }
 
-    private static void probeHomeEntry(final float x, final float y, final int retriesLeft, final boolean bypassThrottle) {
-        if (view == null || entryProbeInFlight || closed) {
-            Log.i(TAG, "entry probe skipped: view=" + (view != null) + " inFlight=" + entryProbeInFlight + " closed=" + closed);
-            return;
-        }
-        final View surface = view;
-        int width = surface.getWidth();
-        int height = surface.getHeight();
-        if (width <= 0 || height <= 0) {
-            Log.i(TAG, "entry probe skipped: size=" + width + "x" + height);
-            return;
-        }
-        if (x < width * 0.5f || y > height * 0.22f) return;
-        long now = SystemClock.uptimeMillis();
-        if (!bypassThrottle && now - lastEntryProbeAt < 600L) {
-            Log.i(TAG, "entry probe throttled: " + (now - lastEntryProbeAt) + "ms since last");
-            return;
-        }
-        lastEntryProbeAt = now;
-        final Activity owner = activity;
-        if (owner == null || owner.isFinishing() || owner.isDestroyed()) return;
-        int[] location = new int[2];
-        surface.getLocationInWindow(location);
-        final int left = location[0] + (int) (width * 0.5f);
-        final int top = location[1];
-        final int copyWidth = Math.max(1, location[0] + width - left);
-        final int copyHeight = Math.max(1, (int) (height * 0.24f));
-        final Bitmap shot = Bitmap.createBitmap(copyWidth, copyHeight, Bitmap.Config.ARGB_8888);
-        entryProbeInFlight = true;
-        final SurfaceView gameSurface = findSurfaceView(owner);
-        try {
-            final float localX = x - width * 0.5f;
-            final float localY = y;
-            PixelCopy.OnPixelCopyFinishedListener listener = result -> {
-                        entryProbeInFlight = false;
-                        boolean found = result == PixelCopy.SUCCESS && entryMarkerHit(shot, localX, localY);
-                        Log.i(TAG, "entry probe result=" + result + " hit=" + found + " localX=" + (int) localX + " localY=" + (int) localY + " surface=" + (gameSurface != null));
-                        shot.recycle();
-                        if (found) {
-                            openFromHomeControl();
-                        } else if (result == PixelCopy.SUCCESS && retriesLeft > 0) {
-                            Log.i(TAG, "entry probe miss, retrying (" + retriesLeft + ")");
-                            UI.postDelayed(() -> probeHomeEntry(x, y, retriesLeft - 1, true), 120L);
-                        } else if (result != PixelCopy.SUCCESS) {
-                            Log.w(TAG, "home entry probe failed: " + result);
-                        }
-                    };
-            Rect source = new Rect(left, top, left + copyWidth, top + copyHeight);
-            if (gameSurface != null) {
-                int[] surfaceLocation = new int[2];
-                gameSurface.getLocationInWindow(surfaceLocation);
-                source.offset(-surfaceLocation[0], -surfaceLocation[1]);
-                PixelCopy.request(gameSurface, source, shot, listener, UI);
-            } else {
-                source.offset(-location[0], -location[1]);
-                PixelCopy.request(owner.getWindow(), source, shot, listener, UI);
-            }
-        } catch (Throwable failure) {
-            entryProbeInFlight = false;
-            shot.recycle();
-            Log.w(TAG, "PixelCopy unavailable", failure);
-        }
-    }
 
     /**
      * 首页标记色 #C6C6C3：r=g=198、b=195，与按钮灰 #C6C6C6 只差蓝通道 3，肉眼无法分辨；
      * 自然画面里几乎不会出现 r 与 g 相等、蓝通道又恰好低 2~4 的像素。
      */
-    /** 一对标记必须紧贴同一个按钮（相邻插在两个 button 边缘），超过该间距的配对当作背景噪声。 */
-    private static final int MARKER_MAX_GAP = 260;
-    private static final int MARKER_RED_GREEN_TOLERANCE = 1;
-    private static final int MARKER_BLUE_DROP_MIN = 2;
-    private static final int MARKER_BLUE_DROP_MAX = 4;
 
-    private static boolean entryMarkerPixel(int pixel) {
-        int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
-        int redGreen = red > green ? red - green : green - red;
-        int blueDrop = green - blue;
-        return redGreen <= MARKER_RED_GREEN_TOLERANCE && blueDrop >= MARKER_BLUE_DROP_MIN && blueDrop <= MARKER_BLUE_DROP_MAX;
-    }
 
-    private static final int MARKER_BLUE_RISE_MIN = 2;
-    private static final int MARKER_BLUE_RISE_MAX = 4;
 
-    private static boolean entryMarkerLeftPixel(int pixel) {
-        int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
-        int redGreen = red > green ? red - green : green - red;
-        int blueRise = blue - green;
-        return redGreen <= MARKER_RED_GREEN_TOLERANCE && blueRise >= MARKER_BLUE_RISE_MIN && blueRise <= MARKER_BLUE_RISE_MAX;
-    }
 
-    /**
-     * 按钮左右各放一个 1 逻辑像素标记：左侧 #C6C6C9（蓝通道比绿通道高 3）、右侧 #C6C6C3（低 3）。
-     * 只有触点横坐标严格落在两个标记之间、且纵向仍在同一按钮带内才算点中入口；
-     * 因此点右侧的“社交”、或在其它页面点右上角都不会误开列表。
-     */
-    private static boolean entryMarkerHit(Bitmap shot, float touchX, float touchY) {
-        int width = shot.getWidth();
-        int height = shot.getHeight();
-        if (width < 2 || height < 1) return false;
-        int bestLeft = -1, bestRight = -1, bestY = -1, bestGap = Integer.MAX_VALUE;
-        int[] row = new int[width];
-        int[] lefts = new int[32];
-        for (int y = 0; y < height; ++y) {
-            shot.getPixels(row, 0, width, 0, y, width, 1);
-            int leftCount = 0;
-            for (int x = 0; x < width; ++x) {
-                int pixel = row[x];
-                if (entryMarkerLeftPixel(pixel)) {
-                    if (leftCount < lefts.length) lefts[leftCount++] = x;
-                } else if (entryMarkerPixel(pixel)) {
-                    for (int i = 0; i < leftCount; ++i) {
-                        int gap = x - lefts[i];
-                        if (gap <= 0 || gap > MARKER_MAX_GAP || gap >= bestGap) continue;
-                        bestGap = gap;
-                        bestLeft = lefts[i];
-                        bestRight = x;
-                        bestY = y;
-                    }
-                }
-            }
-        }
-        Log.i(TAG, "entry markers pair=" + bestLeft + ".." + bestRight + " y=" + bestY + " touchX=" + (int) touchX);
-        if (bestGap == Integer.MAX_VALUE) return false;
-        if (touchX <= bestLeft || touchX >= bestRight) return false;
-        int band = Math.max(48, (int) (height * 0.35f));
-        return bestY >= 0 && Math.abs(touchY - bestY) <= band;
-    }
 
     /** API 30+ 才有精确的 IME inset；单独成类，旧系统不会解析这个类里缺失的类型。 */
     private static final class InsetsApi30 {
@@ -1146,14 +1075,6 @@ public final class HomeOverlay {
                 try { nativeTouch(x, y, action); }
                 catch (Throwable failure) { closeActiveSession(); publishSnapshot(false); }
                 return true;
-            }
-            if (action == MotionEvent.ACTION_DOWN) {
-                Log.i(TAG, "entry tap x=" + (int) event.getX() + " y=" + (int) event.getY()
-                        + " closed=" + closed + " dismissing=" + dismissing + " overlay=" + overlayActive
-                        + " fade=" + fadeAlpha + " home=" + home + " session=" + activeSession
-                        + " inFlight=" + entryProbeInFlight
-                        + " sinceProbe=" + (SystemClock.uptimeMillis() - lastEntryProbeAt));
-                probeHomeEntry(event.getX(), event.getY());
             }
             return false;
         }

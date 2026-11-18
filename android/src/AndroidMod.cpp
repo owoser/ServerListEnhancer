@@ -138,7 +138,7 @@ class AndroidMod {
     std::mutex joinMutex;
     std::string joinNotice;
     bool joinNoticePending{};
-    bool inputRegistered{},moduleEnabled{true},open{},form{},confirm{},plainHttp{true},autoRefresh{true},autoRefreshPending{};
+    bool inputRegistered{},touchRegistered{},moduleEnabled{true},open{},form{},confirm{},plainHttp{true},autoRefresh{true},autoRefreshPending{};
     bool logoReady{},bannerReady{};
     int logoWidth{64},logoHeight{64},bannerWidth{960},bannerHeight{320};
     float scale{1},viewWidth{800},viewHeight{480};
@@ -371,6 +371,34 @@ class AndroidMod {
         {std::lock_guard guard(joinMutex);pending=joinNoticePending;if(pending){notice=std::move(joinNotice);joinNoticePending=false;}}
         (void)pending;
     }
+    // 首页「服务器」按钮在屏幕上的比例矩形（2400x1080 实测 x 1851..2052、y 46..135）。
+    static constexpr float HomeButtonX0{0.771f};
+    static constexpr float HomeButtonX1{0.855f};
+    static constexpr float HomeButtonY0{0.043f};
+    static constexpr float HomeButtonY1{0.125f};
+
+    // 原生触摸回调：只在菜单界面且列表未打开时命中「服务器」按钮，命中后吞掉这次触摸。
+    bool homeTouch(const pl::input::TouchEvent &event) {
+        if(!active||!moduleEnabled)return false;
+        if(event.action!=0)return false;
+        __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","raw touch down x=%.0f y=%.0f",static_cast<double>(event.x),static_cast<double>(event.y));
+        {std::lock_guard lock(mutex);if(open)return false;}
+        bool menu=sle::android::homeMenuVisible();
+        int w0=sle::android::homeScreenWidth();
+        int h0=sle::android::homeScreenHeight();
+        __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","home touch check menu=%d size=%dx%d",menu?1:0,w0,h0);
+        if(!menu)return false;
+        int width=sle::android::homeScreenWidth();
+        int height=sle::android::homeScreenHeight();
+        if(width<=0||height<=0)return false;
+        if(event.x<width*HomeButtonX0||event.x>width*HomeButtonX1
+            ||event.y<height*HomeButtonY0||event.y>height*HomeButtonY1)return false;
+        if(!sle::android::openHomeUiControl())return false;
+        __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","home entry touch x=%.0f y=%.0f width=%d height=%d",
+            static_cast<double>(event.x),static_cast<double>(event.y),width,height);
+        return true;
+    }
+
     bool homeAllowed() const {
         auto state=homeUiState();return state.ready&&state.home&&!state.blocked;
     }
@@ -714,6 +742,7 @@ public:
             pl::modmenu::unregisterModule(Module);active=false;return false;
         }
         if(!inputRegistered){pl::input::registerKeyCallback([this](const auto& e){return key(e);});inputRegistered=true;}
+        if(!touchRegistered){pl::input::registerTouchCallback([this](const auto& e){return homeTouch(e);});touchRegistered=true;}
         latencyProbe.start();
         for(int i=0;i<2;++i)workers.emplace_back([this]{worker();});renderer=std::thread([this]{render();});
         __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Enabled home-screen server entry and two workers");return true;

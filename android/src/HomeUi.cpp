@@ -689,6 +689,62 @@ bool requestServerJoin(std::string address, int port) {
     }
 }
 
+// 打开列表：与旧截图方案共用 Java 侧的 openFromHomeControl 入口。
+bool openHomeUiControl() {
+    auto state = bridge();
+    if (!usable(state) || !state->request) return false;
+    try {
+        Jni j(state->vm);
+        j.env->CallStaticVoidMethod(state->type, state->request);
+        if (j.env->ExceptionCheck()) { j.env->ExceptionClear(); return false; }
+        return true;
+    } catch (...) { return false; }
+}
+
+namespace {
+bool callStaticBoolean(JNIEnv* env, jclass type, const char* name) {
+    jmethodID method = env->GetStaticMethodID(type, name, "()Z");
+    if (method == nullptr) { env->ExceptionClear(); return false; }
+    jboolean value = env->CallStaticBooleanMethod(type, method);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+    return value == JNI_TRUE;
+}
+int callStaticInt(JNIEnv* env, jclass type, const char* name) {
+    jmethodID method = env->GetStaticMethodID(type, name, "()I");
+    if (method == nullptr) { env->ExceptionClear(); return 0; }
+    jint value = env->CallStaticIntMethod(type, method);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return 0; }
+    return static_cast<int>(value);
+}
+} // namespace
+
+bool homeMenuVisible() {
+    auto state = bridge();
+    if (!usable(state)) return false;
+    try {
+        Jni j(state->vm);
+        return callStaticBoolean(j.env, state->type, "gameHomeMenu");
+    } catch (...) { return false; }
+}
+
+int homeScreenWidth() {
+    auto state = bridge();
+    if (!usable(state)) return 0;
+    try {
+        Jni j(state->vm);
+        return callStaticInt(j.env, state->type, "screenWidthPx");
+    } catch (...) { return 0; }
+}
+
+int homeScreenHeight() {
+    auto state = bridge();
+    if (!usable(state)) return 0;
+    try {
+        Jni j(state->vm);
+        return callStaticInt(j.env, state->type, "screenHeightPx");
+    } catch (...) { return 0; }
+}
+
 // 取消未落地的加入：列表关闭、模块禁用后旧的 DNS 结果不会再触发 startActivity。
 void cancelServerJoin() {
     auto state = bridge();

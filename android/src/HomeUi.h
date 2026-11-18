@@ -41,6 +41,13 @@ bool registerHomeUiImage(std::string_view id, std::span<const unsigned char> rgb
                          int width, int height);
 // Width of text as drawn by the overlay (same Paint configuration); negative when JNI is unavailable.
 float measureHomeText(std::string_view text, float size);
+// 首页「服务器」按钮命中改由原生触摸回调判定：直接触发 Java 侧的打开入口。
+bool openHomeUiControl();
+// 当前是否停在菜单界面（不在世界/HUD、不在暂停菜单），供原生触摸回调识别首页。
+bool homeMenuVisible();
+// 全屏像素尺寸，用于把按钮矩形换算为比例坐标；取不到时返回 0。
+int homeScreenWidth();
+int homeScreenHeight();
 void closeHomeUi();
 
 } // namespace sle::android
