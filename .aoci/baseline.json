@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-17T06:57:11Z",
-  "updated_at": "2026-11-18T06:47:08Z",
+  "updated_at": "2026-11-18T07:11:17Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -131,9 +131,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "0efcbe4f92882a1ae50936cac9292438a035dcfa906ed397d015bacf3085e3dd",
-      "size": 37553,
-      "normalized_sha256": "0efcbe4f92882a1ae50936cac9292438a035dcfa906ed397d015bacf3085e3dd"
+      "sha256": "69e3244906c4c4c7422eaa996b2a1505cee69d364aef5a18834c767e5b96be3e",
+      "size": 37692,
+      "normalized_sha256": "69e3244906c4c4c7422eaa996b2a1505cee69d364aef5a18834c767e5b96be3e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -297,15 +297,15 @@
     },
     "src-client/NativeImage.cpp": {
       "role": "index",
-      "sha256": "6f6124f950cd93c9d51a25188098cc4dc8092f88af1ff71ebf94974a90562d8e",
-      "size": 7306,
-      "normalized_sha256": "6f6124f950cd93c9d51a25188098cc4dc8092f88af1ff71ebf94974a90562d8e"
+      "sha256": "7534841c7a2a3489d06eba5fab609ce6b925a4569cf4172b07dc90dc4e404be6",
+      "size": 7336,
+      "normalized_sha256": "7534841c7a2a3489d06eba5fab609ce6b925a4569cf4172b07dc90dc4e404be6"
     },
     "src-client/NativeImage.h": {
       "role": "index",
-      "sha256": "b9eb8e4a445e88b456eef2c37ee2636f56f030b8780ad3064d5c6bff2164d62c",
-      "size": 607,
-      "normalized_sha256": "b9eb8e4a445e88b456eef2c37ee2636f56f030b8780ad3064d5c6bff2164d62c"
+      "sha256": "5f8c88a23f39ce63f42adf20d9fbd98bacf97149af6a3333573f075c44fa09d0",
+      "size": 648,
+      "normalized_sha256": "5f8c88a23f39ce63f42adf20d9fbd98bacf97149af6a3333573f075c44fa09d0"
     },
     "src-client/NativeMenuState.cpp": {
       "role": "index",
@@ -333,9 +333,9 @@
     },
     "src-client/ProbeOverlay.cpp": {
       "role": "index",
-      "sha256": "fcd896d81dffa5f4dd1911ed972760f15ed67d5d2dacd8e37fb190b8799a0d73",
-      "size": 46341,
-      "normalized_sha256": "fcd896d81dffa5f4dd1911ed972760f15ed67d5d2dacd8e37fb190b8799a0d73"
+      "sha256": "7be162ec0f6f849fe9d4dd8f3728a35eae96bebb11f53bf7bc93957c9783a632",
+      "size": 46678,
+      "normalized_sha256": "7be162ec0f6f849fe9d4dd8f3728a35eae96bebb11f53bf7bc93957c9783a632"
     },
     "src-client/ProbeOverlay.h": {
       "role": "index",
