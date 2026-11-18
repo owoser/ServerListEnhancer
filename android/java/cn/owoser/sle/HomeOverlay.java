@@ -91,34 +91,6 @@ public final class HomeOverlay {
     /** 每次加入请求的令牌：DNS 返回时令牌已过期就丢弃结果，避免关闭列表后仍然连服。 */
     private static long joinGeneration;
     private static boolean joinInFlight;
-    /**
-     * 本模组发起的加入会话：只有它会在"离开世界并停在 play_screen"时补一次 BACK 回首页。
-     * 判据完全来自可观测状态：preloader 的 HUD/暂停菜单/菜单查询 + 资源包首页双标记 PixelCopy + play_screen 右上绿色按钮像素签名。
-     */
-    private static final long OWNED_JOIN_TIMEOUT_MS = 15L * 60L * 1000L;
-    private static final long OWNED_JOIN_SAMPLE_MS = 450L;
-    private static final long OWNED_JOIN_MENU_HOLD_MS = 900L;
-    private static boolean ownedJoinArmed;
-    private static long ownedJoinAt;
-    private static boolean ownedJoinSeenHud;
-    private static boolean ownedJoinSeenPause;
-    private static long ownedJoinMenuSince;
-    private static boolean ownedJoinNavDone;
-    private static boolean ownedJoinBackSent;
-    private static long ownedJoinBackAt;
-    private static long ownedNavSampleAt;
-    private static boolean homeMarkerProbeInFlight;
-    private static long homeMarkerCheckedAt;
-    private static volatile boolean homeMarkersPresent;
-    private static boolean playSignatureProbeInFlight;
-    private static long playSignatureCheckedAt;
-    private static long playSignatureSampledAt;
-    private static volatile boolean playSignaturePresent;
-    private static Method hudScreenOpenMethod;
-    private static Method pauseMenuOpenMethod;
-    private static Method showingMenuMethod;
-    private static boolean uiStateResolved;
-    private static boolean uiStateUnavailable;
 
     private static native boolean nativeBindMainActivity(Class<?> mainActivityClass);
     public static native void nativeOpen();
@@ -226,7 +198,6 @@ public final class HomeOverlay {
             // 先让宿主把 joining 清掉（nativeJoinStatus 同步回调），再收起覆盖层，
             // 保证 C++ 侧不会把这次收尾当成用户取消而后又发一次 cancelJoin。
             finishJoin(token, 1, "正在加入 " + host + ":" + port);
-            armOwnedJoinNavigation();
             closeActiveSession();
             publishSnapshot(isBlocked(current));
         } catch (Throwable failure) {
@@ -635,295 +606,17 @@ public final class HomeOverlay {
         } catch (Exception ignored) { snapshot = UNKNOWN; }
     }
 
-
     /** 解析 preloader 暴露的 UI 状态查询（Launcher 1.6.0 的 PreloaderInput 静态 native 方法）。 */
-    private static void resolveUiStateProbe() {
-        if (uiStateResolved || uiStateUnavailable) return;
-        try {
-            ClassLoader loader = app == null ? HomeOverlay.class.getClassLoader() : app.getClassLoader();
-            Class<?> input = Class.forName("org.levimc.launcher.preloader.PreloaderInput", false, loader);
-            hudScreenOpenMethod = input.getMethod("isHudScreenOpen");
-            pauseMenuOpenMethod = input.getMethod("isPauseMenuOpen");
-            showingMenuMethod = input.getMethod("isShowingMenu");
-            uiStateResolved = true;
-            Log.i(TAG, "Preloader UI state probe resolved");
-        } catch (Throwable failure) {
-            uiStateUnavailable = true;
-            Log.w(TAG, "Preloader UI state probe unavailable", failure);
-        }
-    }
 
     /** 加入请求成功落地后开始跟踪这个会话：只有它退出世界时才会被导航回首页。 */
-    private static void armOwnedJoinNavigation() {
-        resolveUiStateProbe();
-        ownedJoinArmed = true;
-        ownedJoinAt = SystemClock.uptimeMillis();
-        ownedJoinSeenHud = false;
-        ownedJoinSeenPause = false;
-        ownedJoinMenuSince = 0L;
-        ownedJoinNavDone = false;
-        ownedJoinBackSent = false;
-        ownedJoinBackAt = 0L;
-        ownedNavSampleAt = 0L;
-        Log.i(TAG, "Owned join armed (return-to-home navigation)");
-    }
-
-    private static boolean uiState(Method method) {
-        if (method == null) return false;
-        try { return Boolean.TRUE.equals(method.invoke(null)); } catch (Throwable ignored) { return false; }
-    }
-
-    /**
-     * 每 450 ms 采样一次 UI 状态：
-     * 1) 必须先看到 HUD（证明真的进了世界）；
-     * 2) HUD 与暂停菜单都关闭、isShowingMenu 为真、且首页双标记不可见 —— 说明停在某个非首页菜单（play_screen）；
-     * 3) 该状态连续保持 900 ms 才补一次 BACK，每个加入会话最多一次，绝不重复或定时连按。
-     */
-    private static void pollOwnedJoinNavigation() {
-        if (!ownedJoinArmed || ownedJoinNavDone) return;
-        long now = SystemClock.uptimeMillis();
-        if (now - ownedJoinAt > OWNED_JOIN_TIMEOUT_MS) {
-            ownedJoinArmed = false;
-            Log.i(TAG, "Owned join navigation expired without returning home");
-            return;
-        }
-        if (now - ownedNavSampleAt < OWNED_JOIN_SAMPLE_MS) return;
-        ownedNavSampleAt = now;
-        boolean hud = uiState(hudScreenOpenMethod);
-        boolean pause = uiState(pauseMenuOpenMethod);
-        boolean menu = uiState(showingMenuMethod);
-        if (hud && !ownedJoinSeenHud) {
-            ownedJoinSeenHud = true;
-            Log.i(TAG, "Owned join: HUD seen, session is in world");
-        }
-        if (pause && !ownedJoinSeenPause) {
-            ownedJoinSeenPause = true;
-            Log.i(TAG, "Owned join: pause menu seen");
-        }
-        maybeProbeHomeMarkers();
-        maybeProbePlaySignature();
-        // 必须先在本次会话里真实见过 HUD（进入世界），否则退回首页这件事与我们无关。
-        if (!ownedJoinSeenHud) return;
-        // 只有原版 play_screen 右上「创建新世界」绿色签名可见时才是"正向证明"，减法判据一律不触发导航。
-        if (!playSignaturePresent) {
-            ownedJoinMenuSince = 0L;
-            return;
-        }
-        if (homeMarkersPresent) {
-            ownedJoinMenuSince = 0L;
-            Log.i(TAG, "Owned join: play signature visible but home markers also present, skip");
-            return;
-        }
-        if (ownedJoinMenuSince == 0L) {
-            ownedJoinMenuSince = now;
-            Log.i(TAG, "Owned join: play screen signature visible (hud=" + hud + " pause=" + pause + " menu=" + menu + ")");
-        }
-        if (now - ownedJoinMenuSince < OWNED_JOIN_MENU_HOLD_MS) return;
-        if (!ownedJoinBackSent) {
-            ownedJoinBackSent = true;
-            ownedJoinBackAt = now;
-            Log.i(TAG, "Owned join: sending BACK (play signature)");
-            pressGameBack();
-            return;
-        }
-        // 按键分发没有生效时，再用一次 Activity 自己的返回处理；每个会话最多两次。
-        if (now - ownedJoinBackAt >= 1500L) {
-            ownedJoinNavDone = true;
-            ownedJoinArmed = false;
-            Log.i(TAG, "Owned join: play signature still visible, using onBackPressed once");
-            pressActivityBack();
-        }
-    }
 
     /** 通过 Activity 的按键分发注入一次 BACK：走游戏自己的 dispatchKeyEvent，绝不直接 finish Activity。 */
-    private static void pressGameBack() {
-        final Activity current = activity;
-        if (current == null || current.isFinishing() || current.isDestroyed()) {
-            Log.w(TAG, "Owned join: activity unavailable, BACK skipped");
-            return;
-        }
-        UI.post(() -> {
-            try {
-                long now = SystemClock.uptimeMillis();
-                current.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
-                current.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
-            } catch (Throwable failure) {
-                Log.w(TAG, "Owned join: BACK injection failed", failure);
-            }
-        });
-    }
 
     /** 兜底：走 Activity 自己的返回处理，仅在上一次按键注入无效时使用一次。 */
-    private static void pressActivityBack() {
-        final Activity current = activity;
-        if (current == null || current.isFinishing() || current.isDestroyed()) {
-            Log.w(TAG, "Owned join: activity unavailable, onBackPressed skipped");
-            return;
-        }
-        UI.post(() -> {
-            try {
-                current.onBackPressed();
-            } catch (Throwable failure) {
-                Log.w(TAG, "Owned join: onBackPressed failed", failure);
-            }
-        });
-    }
 
     /** 采样右上区域是否出现资源包画的首页双标记；只有 armed 会话才会用到。 */
-    private static void maybeProbeHomeMarkers() {
-        if (homeMarkerProbeInFlight || view == null) return;
-        long now = SystemClock.uptimeMillis();
-        if (now - homeMarkerCheckedAt < 1200L) return;
-        homeMarkerCheckedAt = now;
-        final Activity owner = activity;
-        final OverlayView surface = view;
-        if (owner == null || owner.isFinishing() || owner.isDestroyed() || surface == null) return;
-        int width = surface.getWidth();
-        int height = surface.getHeight();
-        if (width <= 0 || height <= 0) return;
-        int[] location = new int[2];
-        surface.getLocationInWindow(location);
-        final int left = location[0] + (int) (width * 0.5f);
-        final int top = location[1];
-        final int copyWidth = Math.max(1, location[0] + width - left);
-        final int copyHeight = Math.max(1, (int) (height * 0.24f));
-        final Bitmap shot = Bitmap.createBitmap(copyWidth, copyHeight, Bitmap.Config.ARGB_8888);
-        homeMarkerProbeInFlight = true;
-        final SurfaceView gameSurface = findSurfaceView(owner);
-        PixelCopy.OnPixelCopyFinishedListener listener = result -> {
-            homeMarkerProbeInFlight = false;
-            boolean present = false;
-            try { present = result == PixelCopy.SUCCESS && containsHomeMarkers(shot); }
-            catch (Throwable ignored) { present = false; }
-            shot.recycle();
-            if (present != homeMarkersPresent) {
-                homeMarkersPresent = present;
-                Log.i(TAG, "Owned join: home markers " + (present ? "visible" : "hidden"));
-            }
-        };
-        try {
-            Rect source = new Rect(left, top, left + copyWidth, top + copyHeight);
-            if (gameSurface != null) {
-                int[] surfaceLocation = new int[2];
-                gameSurface.getLocationInWindow(surfaceLocation);
-                source.offset(-surfaceLocation[0], -surfaceLocation[1]);
-                PixelCopy.request(gameSurface, source, shot, listener, UI);
-            } else {
-                source.offset(-location[0], -location[1]);
-                PixelCopy.request(owner.getWindow(), source, shot, listener, UI);
-            }
-        } catch (Throwable failure) {
-            homeMarkerProbeInFlight = false;
-            shot.recycle();
-        }
-    }
-
-    /** play_screen 右上「创建新世界」绿色按钮的正向像素签名：固定比例区域内绿色占比高即认定停在 play_screen。 */
-    private static final float PLAY_SIGNATURE_X0 = 0.82f;
-    private static final float PLAY_SIGNATURE_X1 = 0.90f;
-    private static final float PLAY_SIGNATURE_Y0 = 0.24f;
-    private static final float PLAY_SIGNATURE_Y1 = 0.27f;
-    private static final float PLAY_SIGNATURE_MIN_RATIO = 0.6f;
-    private static final long PLAY_SIGNATURE_MAX_AGE_MS = 1000L;
-    private static final long PLAY_SIGNATURE_PROBE_MS = 700L;
-
-    private static boolean playSignatureGreen(int pixel) {
-        int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
-        return red >= 40 && red <= 95 && green >= 120 && green <= 200 && blue >= 25 && blue <= 120;
-    }
-
-    /** 采样区域内绿色像素占比（步长 2 像素）；区域非法时返回 0。 */
-    private static float playSignatureGreenRatio(Bitmap shot) {
-        int width = shot.getWidth();
-        int height = shot.getHeight();
-        if (width < 2 || height < 2) return 0f;
-        int[] row = new int[width];
-        int total = 0, green = 0;
-        for (int y = 0; y < height; y += 2) {
-            shot.getPixels(row, 0, width, 0, y, width, 1);
-            for (int x = 0; x < width; x += 2) {
-                ++total;
-                if (playSignatureGreen(row[x])) ++green;
-            }
-        }
-        return total <= 0 ? 0f : (float) green / (float) total;
-    }
-
-    /** 采样 play_screen 右上绿色按钮区域；结果带采样时间戳，超过 1 秒的迟到结果直接丢弃。 */
-    private static void maybeProbePlaySignature() {
-        if (playSignatureProbeInFlight || view == null) return;
-        long now = SystemClock.uptimeMillis();
-        if (now - playSignatureCheckedAt < PLAY_SIGNATURE_PROBE_MS) return;
-        playSignatureCheckedAt = now;
-        final Activity owner = activity;
-        final OverlayView surface = view;
-        if (owner == null || owner.isFinishing() || owner.isDestroyed() || surface == null) return;
-        int screenWidth = surface.getWidth(), screenHeight = surface.getHeight();
-        if (screenWidth <= 0 || screenHeight <= 0) return;
-        int[] location = new int[2];
-        surface.getLocationInWindow(location);
-        final int left = location[0] + Math.round(screenWidth * PLAY_SIGNATURE_X0);
-        final int top = location[1] + Math.round(screenHeight * PLAY_SIGNATURE_Y0);
-        final int copyWidth = Math.max(2, Math.round(screenWidth * (PLAY_SIGNATURE_X1 - PLAY_SIGNATURE_X0)));
-        final int copyHeight = Math.max(2, Math.round(screenHeight * (PLAY_SIGNATURE_Y1 - PLAY_SIGNATURE_Y0)));
-        final long sampledAt = now;
-        playSignatureSampledAt = sampledAt;
-        final Bitmap shot = Bitmap.createBitmap(copyWidth, copyHeight, Bitmap.Config.ARGB_8888);
-        playSignatureProbeInFlight = true;
-        final SurfaceView gameSurface = findSurfaceView(owner);
-        PixelCopy.OnPixelCopyFinishedListener listener = result -> {
-            playSignatureProbeInFlight = false;
-            if (SystemClock.uptimeMillis() - sampledAt > PLAY_SIGNATURE_MAX_AGE_MS) {
-                shot.recycle();
-                return;
-            }
-            boolean present = false;
-            try {
-                present = result == PixelCopy.SUCCESS && playSignatureGreenRatio(shot) >= PLAY_SIGNATURE_MIN_RATIO;
-            } catch (Throwable ignored) {
-                present = false;
-            }
-            shot.recycle();
-            if (present != playSignaturePresent) {
-                playSignaturePresent = present;
-                Log.i(TAG, "Owned join: play screen signature " + (present ? "visible" : "hidden"));
-            }
-        };
-        try {
-            Rect source = new Rect(left, top, left + copyWidth, top + copyHeight);
-            if (gameSurface != null) {
-                int[] surfaceLocation = new int[2];
-                gameSurface.getLocationInWindow(surfaceLocation);
-                source.offset(-surfaceLocation[0], -surfaceLocation[1]);
-                PixelCopy.request(gameSurface, source, shot, listener, UI);
-            } else {
-                source.offset(-location[0], -location[1]);
-                PixelCopy.request(owner.getWindow(), source, shot, listener, UI);
-            }
-        } catch (Throwable failure) {
-            playSignatureProbeInFlight = false;
-            shot.recycle();
-        }
-    }
 
     /** 右上区域同时存在 #C6C6C9（左标记）与 #C6C6C3（右标记）才认为仍在首页。 */
-    private static boolean containsHomeMarkers(Bitmap shot) {
-        int width = shot.getWidth();
-        int height = shot.getHeight();
-        if (width < 2 || height < 1) return false;
-        int[] row = new int[width];
-        boolean left = false, right = false;
-        for (int y = 0; y < height && !(left && right); ++y) {
-            shot.getPixels(row, 0, width, 0, y, width, 1);
-            for (int x = 0; x < width; ++x) {
-                int pixel = row[x];
-                if (!left && entryMarkerLeftPixel(pixel)) left = true;
-                else if (!right && entryMarkerPixel(pixel)) right = true;
-                if (left && right) break;
-            }
-        }
-        return left && right;
-    }
 
     private static void tick() {
         boolean available = refreshEnvironment();
@@ -933,7 +626,6 @@ public final class HomeOverlay {
             closeActiveSession();
         }
         publishSnapshot(blocked);
-        pollOwnedJoinNavigation();
     }
 
     private static void disposeView() {
