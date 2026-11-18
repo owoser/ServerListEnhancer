@@ -295,15 +295,31 @@ public final class HomeOverlay {
     /** 软键盘当前是否遮挡界面，原生侧可据此把输入区整体上移或压缩。 */
     public static boolean imeVisible() { return imeHeightPx() > 0; }
 
+    /** 打开入口遇到瞬时 block（焦点/启动器菜单态）时的有界重试：6 次 × 120ms ≈ 700ms。 */
+    private static final int HOME_OPEN_MAX_ATTEMPTS = 6;
+    private static final long HOME_OPEN_RETRY_MS = 120L;
+
     public static void openFromHomeControl() {
         if (closed) return;
-        final long epoch = generation;
+        tryOpenFromHome(generation, 1);
+    }
+
+    private static void tryOpenFromHome(final long epoch, final int attempt) {
+        if (closed || epoch != generation) return;
         UI.post(() -> {
             if (closed || epoch != generation) return;
             if (!refreshEnvironment() || activity == null || activity.isFinishing() || activity.isDestroyed()) {
                 return;
             }
             if (isBlocked(activity)) {
+                boolean focus = activity.hasWindowFocus();
+                String menuOpen = describeMenuOpen();
+                if (attempt < HOME_OPEN_MAX_ATTEMPTS) {
+                    Log.i(TAG, "open from home control retry " + attempt + " focus=" + focus + " menuOpen=" + menuOpen);
+                    UI.postDelayed(() -> tryOpenFromHome(epoch, attempt + 1), HOME_OPEN_RETRY_MS);
+                    return;
+                }
+                Log.i(TAG, "open from home control gave up after " + HOME_OPEN_MAX_ATTEMPTS + " tries focus=" + focus + " menuOpen=" + menuOpen);
                 closeActiveSession();
                 publishSnapshot(false);
                 return;
@@ -560,6 +576,17 @@ public final class HomeOverlay {
         }
     }
 
+    /** 诊断用：读取启动器菜单管理器当前是否认为菜单打开。 */
+    private static String describeMenuOpen() {
+        try {
+            Object manager = managerInstanceMethod.invoke(null);
+            if (manager == null) return "no-manager";
+            return String.valueOf(Boolean.TRUE.equals(managerShowingMethod.invoke(manager)));
+        } catch (Throwable failure) {
+            return "err";
+        }
+    }
+
     private static boolean isBlocked(Activity currentActivity) {
         if (currentActivity == null || currentActivity.isFinishing() || currentActivity.isDestroyed()) {
             return true;
@@ -691,14 +718,23 @@ public final class HomeOverlay {
     }
 
     private static void probeHomeEntry(float x, float y) {
-        if (view == null || entryProbeInFlight || closed) return;
+        if (view == null || entryProbeInFlight || closed) {
+            Log.i(TAG, "entry probe skipped: view=" + (view != null) + " inFlight=" + entryProbeInFlight + " closed=" + closed);
+            return;
+        }
         final View surface = view;
         int width = surface.getWidth();
         int height = surface.getHeight();
-        if (width <= 0 || height <= 0) return;
+        if (width <= 0 || height <= 0) {
+            Log.i(TAG, "entry probe skipped: size=" + width + "x" + height);
+            return;
+        }
         if (x < width * 0.5f || y > height * 0.22f) return;
         long now = SystemClock.uptimeMillis();
-        if (now - lastEntryProbeAt < 600L) return;
+        if (now - lastEntryProbeAt < 600L) {
+            Log.i(TAG, "entry probe throttled: " + (now - lastEntryProbeAt) + "ms since last");
+            return;
+        }
         lastEntryProbeAt = now;
         final Activity owner = activity;
         if (owner == null || owner.isFinishing() || owner.isDestroyed()) return;
@@ -717,6 +753,7 @@ public final class HomeOverlay {
             PixelCopy.OnPixelCopyFinishedListener listener = result -> {
                         entryProbeInFlight = false;
                         boolean found = result == PixelCopy.SUCCESS && entryMarkerHit(shot, localX, localY);
+                        Log.i(TAG, "entry probe result=" + result + " hit=" + found + " localX=" + (int) localX + " localY=" + (int) localY + " surface=" + (gameSurface != null));
                         shot.recycle();
                         if (found) {
                             openFromHomeControl();
@@ -745,6 +782,8 @@ public final class HomeOverlay {
      * 首页标记色 #C6C6C3：r=g=198、b=195，与按钮灰 #C6C6C6 只差蓝通道 3，肉眼无法分辨；
      * 自然画面里几乎不会出现 r 与 g 相等、蓝通道又恰好低 2~4 的像素。
      */
+    /** 一对标记必须紧贴同一个按钮（相邻插在两个 button 边缘），超过该间距的配对当作背景噪声。 */
+    private static final int MARKER_MAX_GAP = 260;
     private static final int MARKER_RED_GREEN_TOLERANCE = 1;
     private static final int MARKER_BLUE_DROP_MIN = 2;
     private static final int MARKER_BLUE_DROP_MAX = 4;
@@ -775,25 +814,33 @@ public final class HomeOverlay {
         int width = shot.getWidth();
         int height = shot.getHeight();
         if (width < 2 || height < 1) return false;
-        int leftX = Integer.MAX_VALUE;
-        int rightX = Integer.MIN_VALUE;
-        int markerY = -1;
+        int bestLeft = -1, bestRight = -1, bestY = -1, bestGap = Integer.MAX_VALUE;
         int[] row = new int[width];
+        int[] lefts = new int[32];
         for (int y = 0; y < height; ++y) {
             shot.getPixels(row, 0, width, 0, y, width, 1);
+            int leftCount = 0;
             for (int x = 0; x < width; ++x) {
                 int pixel = row[x];
-                if (entryMarkerPixel(pixel)) {
-                    if (x > rightX) { rightX = x; markerY = y; }
-                } else if (x < leftX && entryMarkerLeftPixel(pixel)) {
-                    leftX = x;
+                if (entryMarkerLeftPixel(pixel)) {
+                    if (leftCount < lefts.length) lefts[leftCount++] = x;
+                } else if (entryMarkerPixel(pixel)) {
+                    for (int i = 0; i < leftCount; ++i) {
+                        int gap = x - lefts[i];
+                        if (gap <= 0 || gap > MARKER_MAX_GAP || gap >= bestGap) continue;
+                        bestGap = gap;
+                        bestLeft = lefts[i];
+                        bestRight = x;
+                        bestY = y;
+                    }
                 }
             }
         }
-        if (rightX == Integer.MIN_VALUE || leftX == Integer.MAX_VALUE || leftX >= rightX) return false;
-        if (touchX <= leftX || touchX >= rightX) return false;
+        Log.i(TAG, "entry markers pair=" + bestLeft + ".." + bestRight + " y=" + bestY + " touchX=" + (int) touchX);
+        if (bestGap == Integer.MAX_VALUE) return false;
+        if (touchX <= bestLeft || touchX >= bestRight) return false;
         int band = Math.max(48, (int) (height * 0.35f));
-        return markerY >= 0 && Math.abs(touchY - markerY) <= band;
+        return bestY >= 0 && Math.abs(touchY - bestY) <= band;
     }
 
     /** API 30+ 才有精确的 IME inset；单独成类，旧系统不会解析这个类里缺失的类型。 */
@@ -1091,7 +1138,14 @@ public final class HomeOverlay {
                 catch (Throwable failure) { closeActiveSession(); publishSnapshot(false); }
                 return true;
             }
-            if (action == MotionEvent.ACTION_DOWN) probeHomeEntry(event.getX(), event.getY());
+            if (action == MotionEvent.ACTION_DOWN) {
+                Log.i(TAG, "entry tap x=" + (int) event.getX() + " y=" + (int) event.getY()
+                        + " closed=" + closed + " dismissing=" + dismissing + " overlay=" + overlayActive
+                        + " fade=" + fadeAlpha + " home=" + home + " session=" + activeSession
+                        + " inFlight=" + entryProbeInFlight
+                        + " sinceProbe=" + (SystemClock.uptimeMillis() - lastEntryProbeAt));
+                probeHomeEntry(event.getX(), event.getY());
+            }
             return false;
         }
 
