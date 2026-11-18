@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-17T06:57:11Z",
-  "updated_at": "2026-11-18T02:28:04Z",
+  "updated_at": "2026-11-18T02:30:32Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "648b9b48c53d27002deac6701752091f818fe95bbfc2b8a02a5ede177041e98d",
-      "size": 34023,
-      "normalized_sha256": "648b9b48c53d27002deac6701752091f818fe95bbfc2b8a02a5ede177041e98d"
+      "sha256": "1b7b581ec9567ebbad606f218d82d3c0770ebfa3bad570968ce59341a40add80",
+      "size": 34038,
+      "normalized_sha256": "1b7b581ec9567ebbad606f218d82d3c0770ebfa3bad570968ce59341a40add80"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -143,9 +143,9 @@
     },
     "docs/android.md": {
       "role": "index",
-      "sha256": "042b48124c4fb7abfa9cff1848f97bca71e4db3c29f029b39fc36e2f55507b49",
-      "size": 9487,
-      "normalized_sha256": "042b48124c4fb7abfa9cff1848f97bca71e4db3c29f029b39fc36e2f55507b49"
+      "sha256": "8a98facaa72020203fcefc689d8f3a8314d143ef9584b06fcb01491aed2680b0",
+      "size": 9688,
+      "normalized_sha256": "8a98facaa72020203fcefc689d8f3a8314d143ef9584b06fcb01491aed2680b0"
     },
     "docs/discovery-images.md": {
       "role": "index",

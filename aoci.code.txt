@@ -14,7 +14,7 @@ discovery-images.md[SD7S]: F:服务端配置字段、/v1/join 扩展协议、图
 mcapi-request.md[SD5T]: F:向 LiteLDev/mcapi-requests 申请客户端直连符号的 issue 草稿 | R:code:README.md | A:标题格式、Mod、Platform、Justification、Classes、三个修饰名与优先级 | S:三个符号在 26.60.7 均为 MCNAPI，实测链接 LNK2019；修饰名取自编译探针与链接失败信息，非手工推导
 validation-discovery.md[TQ6M]: F:第一版验收记录：两端构建、预发现图文、离线缓存、队列、图片安全与配置重载 | R:code:docs/discovery-images.md,code:tests/status_queue_test.cpp,code:tests/image_pipeline_test.cpp | A:已通过表格、实机截图表、回归执行说明 | S:截图在 build/ 未入库；状态用例最后一项要求授权开发服 HTTP 正在运行
 validation-ui-gif.md[TQ6S]: F:第二版验收记录：原生 UI、GIF 动画、输入校验、UDP 真实 RTT 与大小窗口 | R:code:tests/Run-Regression.cmd,code:tests/gif_test.cpp,code:tests/udp_probe_test.cpp,code:docs/validation-discovery.md | A:六套自动化用例、两张用户 GIF 参数、1968x1058 与 1264x721 实机结论 | S:明确未录制光标闪烁视频、未实现完整 IME；GIF 用例需先把真实文件放入 build/gif-fixtures/
-android.md[SD8T]: F:Android 移植说明：入口位置与点击判定、行图标与 UDP 延迟、查询时机、构建命令、手机导入与验证步骤 | R:code:README.md,code:scripts/package-android.ps1,code:android/java/cn/owoser/sle/HomeOverlay.java,code:android/src/LatencyProbe.h | A:目录、功能与边界、构建、安装与验证、行图与延迟规则、光标与按钮对齐约定、开列表补查规则 | S:入口依赖近灰标记与 PixelCopy 探测，主题遮蔽时入口不响应
+android.md[SD8T]: F:Android 移植说明：入口位置与点击判定、行图标与 UDP 延迟、查询时机、构建命令、手机导入与验证步骤 | R:code:README.md,code:scripts/package-android.ps1,code:android/java/cn/owoser/sle/HomeOverlay.java,code:android/src/LatencyProbe.h | A:目录、功能与边界、构建、安装与验证、行图与延迟规则、按实测字宽定位光标与右对齐列、开列表补查规则 | S:入口依赖近灰标记与 PixelCopy 探测，主题遮蔽时入口不响应
 
 ===E:/code/LL3/Plugins/ServerListEnhancer/scripts/===
 generate-builtin-assets.cjs[XV6S]: F:生成原创 64x64 草方块与 960x320 风景 PNG，并同步写出内嵌字节数组 | R:code:src/common/BuiltinImages.cpp,code:src/common/BuiltinImages.h | A:纯 Node 无依赖，写 resources/logo/default.png、resources/intro/default.png 与 C++ 数组 | S:只用确定性像素画，不抽取游戏贴图；改图必须重跑，否则内嵌字节与资源不一致
