@@ -523,9 +523,11 @@ public final class HomeOverlay {
         entryProbeInFlight = true;
         final SurfaceView gameSurface = findSurfaceView(owner);
         try {
+            final float localX = x - width * 0.5f;
+            final float localY = y;
             PixelCopy.OnPixelCopyFinishedListener listener = result -> {
                         entryProbeInFlight = false;
-                        boolean found = result == PixelCopy.SUCCESS && containsEntryMarker(shot);
+                        boolean found = result == PixelCopy.SUCCESS && entryMarkerHit(shot, localX, localY);
                         shot.recycle();
                         if (found) {
                             openFromHomeControl();
@@ -565,36 +567,44 @@ public final class HomeOverlay {
         return redGreen <= MARKER_RED_GREEN_TOLERANCE && blueDrop >= MARKER_BLUE_DROP_MIN && blueDrop <= MARKER_BLUE_DROP_MAX;
     }
 
+    private static final int MARKER_BLUE_RISE_MIN = 2;
+    private static final int MARKER_BLUE_RISE_MAX = 4;
+
+    private static boolean entryMarkerLeftPixel(int pixel) {
+        int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
+        int redGreen = red > green ? red - green : green - red;
+        int blueRise = blue - green;
+        return redGreen <= MARKER_RED_GREEN_TOLERANCE && blueRise >= MARKER_BLUE_RISE_MIN && blueRise <= MARKER_BLUE_RISE_MAX;
+    }
+
     /**
-     * 标记只有 1 个逻辑像素，按 GUI 缩放通常落成 2×2 物理像素：优先要求 2×2 全部命中，
-     * 避免与自然画面里零散的同色像素混淆；整幅采样只剩唯一一处命中时也接受（标记只剩 1 像素的情况）。
+     * 按钮左右各放一个 1 逻辑像素标记：左侧 #C6C6C9（蓝通道比绿通道高 3）、右侧 #C6C6C3（低 3）。
+     * 只有触点横坐标严格落在两个标记之间、且纵向仍在同一按钮带内才算点中入口；
+     * 因此点右侧的“社交”、或在其它页面点右上角都不会误开列表。
      */
-    private static boolean containsEntryMarker(Bitmap shot) {
+    private static boolean entryMarkerHit(Bitmap shot, float touchX, float touchY) {
         int width = shot.getWidth();
         int height = shot.getHeight();
-        if (width < 1 || height < 1) return false;
-        int[] current = new int[width];
-        int[] previous = new int[width];
-        boolean hasPrevious = false;
-        int matches = 0;
+        if (width < 2 || height < 1) return false;
+        int leftX = Integer.MAX_VALUE;
+        int rightX = Integer.MIN_VALUE;
+        int markerY = -1;
+        int[] row = new int[width];
         for (int y = 0; y < height; ++y) {
-            shot.getPixels(current, 0, width, 0, y, width, 1);
+            shot.getPixels(row, 0, width, 0, y, width, 1);
             for (int x = 0; x < width; ++x) {
-                if (!entryMarkerPixel(current[x])) continue;
-                ++matches;
-                if (hasPrevious && x > 0
-                        && entryMarkerPixel(current[x - 1])
-                        && entryMarkerPixel(previous[x])
-                        && entryMarkerPixel(previous[x - 1])) {
-                    return true;
+                int pixel = row[x];
+                if (entryMarkerPixel(pixel)) {
+                    if (x > rightX) { rightX = x; markerY = y; }
+                } else if (x < leftX && entryMarkerLeftPixel(pixel)) {
+                    leftX = x;
                 }
             }
-            int[] swap = previous;
-            previous = current;
-            current = swap;
-            hasPrevious = true;
         }
-        return matches == 1;
+        if (rightX == Integer.MIN_VALUE || leftX == Integer.MAX_VALUE || leftX >= rightX) return false;
+        if (touchX <= leftX || touchX >= rightX) return false;
+        int band = Math.max(48, (int) (height * 0.35f));
+        return markerY >= 0 && Math.abs(touchY - markerY) <= band;
     }
 
     /** API 30+ 才有精确的 IME inset；单独成类，旧系统不会解析这个类里缺失的类型。 */

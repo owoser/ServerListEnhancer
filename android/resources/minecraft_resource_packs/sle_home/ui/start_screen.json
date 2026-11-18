@@ -13,6 +13,22 @@
         "operation": "insert_front",
         "value": [
           {
+            "sle_home_probe_left": {
+              "type": "image",
+              "texture": "textures/ui/White",
+              "size": [
+                1,
+                1
+              ],
+              "color": [
+                0.7764706,
+                0.7764706,
+                0.7882353,
+                1
+              ]
+            }
+          },
+          {
             "sle_home_servers_button@common_buttons.light_text_button": {
               "size": [
                 50,
