@@ -7,6 +7,8 @@
 #include "ProbeOverlay.h"
 #include "ImageProvider.h"
 #include "LatencyProbe.h"
+#include "JoinService.h"
+#include "LoaderVersion.h"
 #include "ServerStatus.h"
 #include "common/Endpoint.h"
 #include "ServerStore.h"
@@ -14,6 +16,7 @@
 #include "VisualCache.h"
 #include "VisualPacketHandler.h"
 
+#include "ll/api/Versions.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/client/ClientExitLevelEvent.h"
 #include "ll/api/event/client/ClientStartJoinLevelEvent.h"
@@ -38,6 +41,16 @@ ClientEntry::ClientEntry() : mSelf(*ll::mod::NativeMod::current()) {}
 
 bool ClientEntry::load() {
     auto& logger = getSelf().getLogger();
+    // LL 不在普通模组依赖集合中；在任何客户端初始化前检查实际运行版本。
+    auto const loaderVersion = ll::getLoaderVersion();
+    if (!isSupportedLoaderVersion(loaderVersion)) {
+        logger.error(
+            "ServerListEnhancer (client) 需要 LeviLamina >={}，当前版本 {}，拒绝加载",
+            kMinimumLoaderVersion,
+            loaderVersion.to_string()
+        );
+        return false;
+    }
     logger.info("ServerListEnhancer (client) 加载中...");
 
     // mods/ServerListEnhancer/config -> mods/ServerListEnhancer/cache/visuals.json
@@ -71,6 +84,7 @@ bool ClientEntry::load() {
 }
 
 bool ClientEntry::enable() {
+    startJoinService();
     ImageProvider::getInstance().start();
     LatencyProbe::getInstance().start();
     // Legacy NetherNet status metadata only; image downloads always validate TLS.
@@ -109,6 +123,7 @@ bool ClientEntry::enable() {
 }
 
 bool ClientEntry::disable() {
+    stopJoinService();
     if (mJoinListener) {
         ll::event::EventBus::getInstance().removeListener(mJoinListener);
         mJoinListener.reset();
@@ -126,6 +141,10 @@ bool ClientEntry::disable() {
 }
 
 bool ClientEntry::unload() {
+    if (!canUnloadJoinService()) {
+        getSelf().getLogger().warn("[join] A game callback is still active; restart the client to unload safely");
+        return false;
+    }
     getSelf().getLogger().info("ServerListEnhancer (client) 已卸载");
     return true;
 }

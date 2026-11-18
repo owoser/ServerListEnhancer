@@ -145,9 +145,11 @@ struct Bridge {
     JavaVM* vm{};
     jclass type{}; // Global ref retains its DexClassLoader as well.
     jmethodID install{}, query{}, frame{}, image{}, close{}, request{}, measure{};
+    jmethodID join{}, cancelJoin{};
     std::function<void()> open;
     std::function<bool(float, float, int)> touch;
     std::function<bool()> back;
+    std::function<void(int, std::string)> joinStatus;
     std::atomic<bool> installed{}, failed{}, closing{}, reported{};
 
     ~Bridge() {
@@ -372,6 +374,21 @@ jboolean JNICALL nativeBack(JNIEnv* env, jclass owner) {
     catch (...) { fail(state, "nativeBack", "C++ callback threw an unknown exception"); }
     return JNI_FALSE;
 }
+// Java 侧把加入请求的结果回报给宿主：status>0 已发起深链，<=0 失败并带提示文案。
+void JNICALL nativeJoinStatus(JNIEnv* env, jclass owner, jint status, jstring message) {
+    auto state = bridge();
+    if (!usable(state) || !env->IsSameObject(owner, state->type)) return;
+    try {
+        Jni j(state->vm);
+        std::string text;
+        if (message != nullptr) {
+            // 复用 Jni::string(jstring)：内部走 String.getBytes(UTF-8) 并限制 64 KiB。
+            try { text = j.string(message); } catch (...) { text.clear(); }
+        }
+        if (state->joinStatus) state->joinStatus(static_cast<int>(status), std::move(text));
+    } catch (const std::exception& e) { fail(state, "nativeJoinStatus", e.what()); }
+    catch (...) { fail(state, "nativeJoinStatus", "C++ callback threw an unknown exception"); }
+}
 
 void closeCurrent() {
     std::shared_ptr<Bridge> previous;
@@ -452,7 +469,8 @@ std::filesystem::path cacheDex(Jni& j, const std::filesystem::path& source,
 bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
                       std::function<void()> open,
                       std::function<bool(float, float, int)> touch,
-                      std::function<bool()> back) {
+                      std::function<bool()> back,
+                      std::function<void(int, std::string)> joinStatus) {
     std::lock_guard lifecycleLock(lifecycleMutex);
     closeCurrent();
     auto state = std::make_shared<Bridge>();
@@ -460,9 +478,10 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
     state->open = std::move(open);
     state->touch = std::move(touch);
     state->back = std::move(back);
+    state->joinStatus = std::move(joinStatus);
     try {
-        if (!state->open || !state->touch || !state->back)
-            throw std::runtime_error("HomeUi requires open, touch, and back callbacks");
+        if (!state->open || !state->touch || !state->back || !state->joinStatus)
+            throw std::runtime_error("HomeUi requires open, touch, back, and join status callbacks");
         modRoot = std::filesystem::absolute(modRoot);
         const auto dexPath = modRoot / "ui.dex";
         std::error_code error;
@@ -511,6 +530,8 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
         state->image = j.method(state->type, "image", "(Ljava/lang/String;[BII)V", true);
         state->close = j.method(state->type, "close", "()V", true);
         state->request = j.method(state->type, "openFromHomeControl", "()V", true);
+        state->join = j.method(state->type, "joinServer", "(Ljava/lang/String;I)V", true);
+        state->cancelJoin = j.method(state->type, "cancelJoin", "()V", true);
         // 可选能力：旧版 DEX 没有 measureText，解析失败时保持为空并退回 C++ 估算，不影响安装。
         state->measure = j.env->GetStaticMethodID(state->type, "measureText", "(Ljava/lang/String;F)F");
         if (j.env->ExceptionCheck()) {
@@ -522,8 +543,9 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
             {const_cast<char*>("nativeOpen"), const_cast<char*>("()V"), reinterpret_cast<void*>(nativeOpen)},
             {const_cast<char*>("nativeTouch"), const_cast<char*>("(FFI)Z"), reinterpret_cast<void*>(nativeTouch)},
             {const_cast<char*>("nativeBack"), const_cast<char*>("()Z"), reinterpret_cast<void*>(nativeBack)},
+            {const_cast<char*>("nativeJoinStatus"), const_cast<char*>("(ILjava/lang/String;)V"), reinterpret_cast<void*>(nativeJoinStatus)},
         };
-        const auto registration = j.env->RegisterNatives(state->type, natives, 4);
+        const auto registration = j.env->RegisterNatives(state->type, natives, 5);
         j.check("RegisterNatives(HomeOverlay)");
         if (registration != JNI_OK) throw std::runtime_error("HomeUi native callback registration failed");
         {
@@ -651,6 +673,31 @@ float measureHomeText(std::string_view text, float size) {
     } catch (...) {
         return -1.f;
     }
+}
+
+// 发起加入：域名解析与 Intent 组装都在伴生 DEX 里完成，这里只投递参数。
+bool requestServerJoin(std::string address, int port) {
+    auto state = bridge();
+    if (!usable(state) || !state->join || address.empty() || port <= 0 || port > 65535) return false;
+    try {
+        Jni j(state->vm);
+        j.env->CallStaticVoidMethod(state->type, state->join, j.string(address), static_cast<jint>(port));
+        j.check("HomeOverlay.joinServer");
+        return !j.env->ExceptionCheck();
+    } catch (...) {
+        return false;
+    }
+}
+
+// 取消未落地的加入：列表关闭、模块禁用后旧的 DNS 结果不会再触发 startActivity。
+void cancelServerJoin() {
+    auto state = bridge();
+    if (!usable(state) || !state->cancelJoin) return;
+    try {
+        Jni j(state->vm);
+        j.env->CallStaticVoidMethod(state->type, state->cancelJoin);
+        if (j.env->ExceptionCheck()) j.env->ExceptionClear();
+    } catch (...) {}
 }
 
 void closeHomeUi() {

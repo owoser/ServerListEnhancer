@@ -1,10 +1,11 @@
 # ServerListEnhancer（服务器列表增强）
 
-Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05、普通 LeviLamina 26.60.7，客户端和服务端 DLL 不可混用。Android ARM64 版使用 LeviLauncher Android 的 Preloader SDK，构建和功能范围见 [Android 适配说明](<docs/android.md>)。
+Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05。客户端最低要求普通 LeviLamina 26.60.8，并须完整更新其配套符号数据后重启游戏；服务端单独构建，客户端和服务端 DLL 不可混用。Android ARM64 版使用 LeviLauncher Android 的 Preloader SDK，构建和功能范围见 [Android 适配说明](<docs/android.md>)。
 
 ## Windows 版已实现
 
 - 主菜单独立服务器列表，支持添加、编辑、删除和选中查看详情；不读写原版列表。
+- 选中服务器后显示原版绿色“加入游戏”按钮，直接连接所选地址与端口；未选中时隐藏，翻页或重开列表清除选择。
 - 复用游戏原版按钮贴图和真实 Play 按钮几何，原生退出确认框出现时隐藏叠加层。
 - 原创默认 64×64 草方块 Logo、960×320 风景简介图，PNG 字节编入 DLL，离线可用。
 - PNG/JPEG 静态图片与 GIF 原生动画；后台 HTTP(S) 下载、受限内联 PNG、WIC 解码缩放、内容哈希磁盘缓存。
@@ -14,14 +15,14 @@ Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05、普通 LeviLamina
 - 服务端扩展现有 NetherNet GET /v1/join，未进服即可取得 Logo、简介和简介图。
 - **无需 DearOreUI、资源包或实验版 LL。** 旧网页桥接不参与默认构建。
 
-> 点击直连仍受当前客户端 MCAPI 导出限制，本轮没有解决；点击条目现在选择详情。见 [接口申请说明](<docs/mcapi-request.md>)。
+直连使用 LL 26.60.8 发布的 `World::ServerWorldJoiner::joinExternalServer`。详见 [加入游戏与版本要求](<docs/join-game.md>)；接口申请 [#352](https://github.com/LiteLDev/mcapi-requests/issues/352) 已获发布。
 
 ## 安装与升级
 
 - 客户端：退出游戏，把客户端包内的 ServerListEnhancer 目录放到客户端 mods 目录。
 - 服务端：停止服务器，把服务端包内同名目录放到 mods；兼容现有 plugins 目录映射。
 - **升级只替换程序和说明，保留原有服务器列表、配置和缓存；不要删除整个模组目录。**
-- 客户端仍需 LeviLamina 客户端版，但不需要 DearOreUI。
+- Windows 客户端运行时会在加载初始化前拒绝 LL 26.60.8 以下版本；只替换 LL DLL 而未更新配套符号数据时，连接接口检查会提示完整升级。无需 DearOreUI。
 - 配置支持 /sle reload。服务端 DLL 固定到进程生命周期，不支持热卸载或运行中替换；更新 DLL 必须重启。
 
 ## 配置与发现协议
@@ -32,7 +33,7 @@ Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05、普通 LeviLamina
 
 ## Android（ARM64）
 
-Android 原生包使用独立 Preloader SDK，当前绑定 LeviLauncher 1.6.0。服务器入口仅在游戏首页显示，位于“社交”按钮左侧，运行时读取原版按钮资源；打开列表或离开首页即隐藏入口。列表每行自动加载 Logo 并播放 GIF，右侧显示 UDP 时延，行尾铅笔可直接编辑；软键盘避让、截图不误关、表单带闪烁光标。直连尚未移植。目录、构建命令、手机导入步骤和与 Windows 的功能差异见 [Android 适配说明](<docs/android.md>)。
+Android 原生包使用独立 Preloader SDK，当前绑定 LeviLauncher 1.6.0。服务器入口仅在游戏首页显示，位于“社交”按钮左侧，运行时读取原版按钮资源；打开列表或离开首页即隐藏入口。列表每行自动加载 Logo 并播放 GIF，右侧显示 UDP 时延，行尾铅笔可直接编辑；软键盘避让、截图不误关、表单带闪烁光标。选中服务器后可点击绿色“加入游戏”，未选中时按钮禁用；连接沿用启动器和游戏的原生确认流程。目录、构建命令、手机导入步骤和与 Windows 的功能差异见 [Android 适配说明](<docs/android.md>)。
 
 ```powershell
 ./scripts/package-android.ps1
@@ -45,14 +46,14 @@ Android 原生包使用独立 Preloader SDK，当前绑定 LeviLauncher 1.6.0。
 需要 xmake、Visual Studio C++ 工具链、clang-cl。两端配置不能并发切换：
 
 ```powershell
-xmake f --target_type=client -y
-xmake -y
+xmake f -P . --target_type=client --ll_version=26.60.8 -y
+xmake -P . -y
 # 保存客户端 bin 产物后，再构建服务端
-xmake f --target_type=server -y
-xmake -y
+xmake f -P . --target_type=server --ll_version=26.60.8 -y
+xmake -P . -y
 ```
 
-每次产物位于 bin/ServerListEnhancer，切换 target 后该目录会被覆盖。默认 LL 26.60.7，其它版本需要重新验证。
+每次产物位于 bin/ServerListEnhancer，切换 target 后该目录会被覆盖。默认 LL 26.60.8；客户端构建会拒绝更旧的 SDK，服务端可以独立指定版本。最低版本门禁不表示未来游戏 ABI 已验证。
 
 默认图片为 [Logo](<resources/logo/default.png>) 和 [简介图](<resources/intro/default.png>)；使用 [生成脚本](<scripts/generate-builtin-assets.cjs>) 可重复生成原图并同步内嵌字节。
 

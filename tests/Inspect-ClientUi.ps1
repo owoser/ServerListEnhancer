@@ -19,6 +19,7 @@ public static class UiProbeNative {
  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a,uint b,bool attach);
  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
  [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr e);
  [DllImport("user32.dll")] public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
 }
@@ -27,8 +28,10 @@ $p=Get-Process -Name Minecraft.Windows -ErrorAction Stop | Select-Object -First 
 $h=$p.MainWindowHandle
 if($h -eq 0){throw 'Client has no window'}
 [UiProbeNative]::ShowWindow($h,9) | Out-Null
-[UiProbeNative]::keybd_event(18,0,0,[UIntPtr]::Zero)
-[UiProbeNative]::keybd_event(18,0,2,[UIntPtr]::Zero)
+if ([UiProbeNative]::GetForegroundWindow() -ne $h) {
+ [UiProbeNative]::keybd_event(18,0,0,[UIntPtr]::Zero)
+ [UiProbeNative]::keybd_event(18,0,2,[UIntPtr]::Zero)
+}
 [UiProbeNative]::BringWindowToTop($h) | Out-Null
 $foreground=[UiProbeNative]::GetForegroundWindow(); [uint32]$owner=0
 $thread=[UiProbeNative]::GetWindowThreadProcessId($foreground,[ref]$owner)
@@ -43,7 +46,13 @@ $r=New-Object UiProbeNative+Rect
 $pt=New-Object UiProbeNative+Point
 [UiProbeNative]::GetClientRect($h,[ref]$r) | Out-Null
 [UiProbeNative]::ClientToScreen($h,[ref]$pt) | Out-Null
-if($X -ge 0 -and $Y -ge 0){[UiProbeNative]::SetCursorPos($pt.X+$X,$pt.Y+$Y) | Out-Null}
+if($X -ge 0 -and $Y -ge 0){
+ $virtualX=[UiProbeNative]::GetSystemMetrics(76); $virtualY=[UiProbeNative]::GetSystemMetrics(77)
+ $virtualWidth=[UiProbeNative]::GetSystemMetrics(78); $virtualHeight=[UiProbeNative]::GetSystemMetrics(79)
+ [uint32]$absoluteX=($pt.X+$X-$virtualX)*65535/($virtualWidth-1)
+ [uint32]$absoluteY=($pt.Y+$Y-$virtualY)*65535/($virtualHeight-1)
+ [UiProbeNative]::mouse_event(0xC001,$absoluteX,$absoluteY,0,[UIntPtr]::Zero)
+}
 if($Action -eq 'click'){
  Start-Sleep -Milliseconds 180
  [UiProbeNative]::mouse_event(2,0,0,0,[UIntPtr]::Zero)

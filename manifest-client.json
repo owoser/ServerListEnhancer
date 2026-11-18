@@ -1,0 +1,12 @@
+{
+    "name": "${modName}",
+    "entry": "${modFile}",
+    "version": "${modVersion}",
+    "author": "OWOSER Dev",
+    "type": "native",
+    "platform": "client",
+    "extraInfo": {
+        "minimumLeviLaminaVersion": "26.60.8",
+        "versionEnforcement": "Runtime load guard; loader is not a regular mod dependency"
+    }
+}

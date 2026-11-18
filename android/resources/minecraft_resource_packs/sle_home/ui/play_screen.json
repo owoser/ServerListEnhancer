@@ -1,0 +1,59 @@
+{
+  "namespace": "play",
+  "play_screen_content": {
+    "modifications": [
+      {
+        "array_name": "controls",
+        "operation": "insert_front",
+        "value": [
+          {
+            "sle_play_probe_left": {
+              "type": "image",
+              "texture": "textures/ui/White",
+              "size": [
+                1,
+                1
+              ],
+              "anchor_from": "top_left",
+              "anchor_to": "top_left",
+              "offset": [
+                2,
+                2
+              ],
+              "layer": 90,
+              "color": [
+                0.7764706,
+                0.7647059,
+                0.7647059,
+                1
+              ]
+            }
+          },
+          {
+            "sle_play_probe_right": {
+              "type": "image",
+              "texture": "textures/ui/White",
+              "size": [
+                1,
+                1
+              ],
+              "anchor_from": "top_left",
+              "anchor_to": "top_left",
+              "offset": [
+                4,
+                2
+              ],
+              "layer": 90,
+              "color": [
+                0.7647059,
+                0.7647059,
+                0.7764706,
+                1
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

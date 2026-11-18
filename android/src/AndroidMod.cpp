@@ -22,6 +22,7 @@
 #include <iomanip>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -131,6 +132,12 @@ class AndroidMod {
     std::vector<std::thread> workers;
     std::thread renderer;
     std::atomic<bool> active{};
+    // 加入请求：joining 表示已有请求在途；结果经 joinMutex 交给渲染线程显示，
+    // 避免 Java 同步回报时在 act() 已持有 mutex 的同一线程上再次加锁。
+    std::atomic<bool> joining{};
+    std::mutex joinMutex;
+    std::string joinNotice;
+    bool joinNoticePending{};
     bool inputRegistered{},moduleEnabled{true},open{},form{},confirm{},plainHttp{true},autoRefresh{true},autoRefreshPending{};
     bool logoReady{},bannerReady{};
     int logoWidth{64},logoHeight{64},bannerWidth{960},bannerHeight{320};
@@ -344,10 +351,32 @@ class AndroidMod {
         return endpoint;
     }
 
+    // 当前真正可以加入的服务器：必须已选中、仍在列表里、地址端口有效。
+    std::optional<SavedServer> joinTarget() const {
+        if(selected.empty())return std::nullopt;
+        auto server=ServerStore::getInstance().get(selected);
+        if(!server||!client::validServerEndpoint(server->address,server->port))return std::nullopt;
+        return server;
+    }
+    // 清空选中及其详情资源：翻页、重新打开、新增服务器后都必须回到"未选中"，
+    // 否则「加入游戏」会连到屏幕上看不到的旧条目。
+    void clearSelection() {
+        selected.clear();
+        logoReady=bannerReady=false;
+        clearAnimation(logoAnimation);clearAnimation(bannerAnimation);
+    }
+    // 渲染线程取出最近一次加入结果；只在持有 mutex 时调用。
+    void drainJoinNotice() {
+        bool pending{};
+        {std::lock_guard guard(joinMutex);pending=joinNoticePending;if(pending){notice=std::move(joinNotice);joinNoticePending=false;}}
+        (void)pending;
+    }
     bool homeAllowed() const {
         auto state=homeUiState();return state.ready&&state.home&&!state.blocked;
     }
     void dismiss() {
+        // 关闭列表即作废在途的加入请求，迟到的 DNS 结果不会再拉起游戏。
+        if(joining.exchange(false))cancelServerJoin();
         bool wasOpen=open;open=form=confirm=false;pressed=-1;hits.clear();
         // 关闭时释放逐帧 Bitmap，重新打开后由探测流程重新注册。
         if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimations();clearRowImages();latencyProbe.pause();pl::input::hideKeyboard();}
@@ -356,7 +385,7 @@ class AndroidMod {
         if(!active)return;auto state=homeUiState();
         {std::lock_guard lock(mutex);
         if(!moduleEnabled||!state.ready||!state.home||state.blocked){submitHomeUiFrame(0,{},state.session);return;}
-        open=true;form=confirm=false;pressed=-1;hits.clear();autoRefreshPending=autoRefresh;}
+        open=true;form=confirm=false;pressed=-1;hits.clear();clearSelection();autoRefreshPending=autoRefresh;}
         // 首次打开或缓存过期时自动补齐资料与图片；行点击仍然只做选中，不发查询。
     }
 
@@ -491,9 +520,13 @@ class AndroidMod {
         SavedServer s;if(auto old=store.get(editId))s=*old;
         // 名称留空就保持空（与 Windows 一致）：显示时再回退到探测名称或 host:port，
         // 探测结果不会写回 servers.json，因此失败时已有名称不会被改掉。
-        s.name=name;s.address=parsed.host;s.port=parsed.port;auto id=store.upsert(s);
+        s.name=name;s.address=parsed.host;s.port=parsed.port;
+        // 只有编辑"本来就是选中项"的服务器时把选中 id 换成新 id；新增一律回到未选中。
+        const bool wasSelected=!editId.empty()&&selected==editId;
+        auto id=store.upsert(s);
         if(id.empty()||!store.save()){notice="保存失败，请检查存储空间";return;}
-        selected=id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimation(id);clearRowImage("sle.row."+id);
+        if(wasSelected)selected=id;else if(editId.empty())clearSelection();
+        logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimation(id);clearRowImage("sle.row."+id);
         form=false;notice="已保存";pl::input::hideKeyboard();enqueue(*store.get(id));
     }
     void act(const Hit& hit) {
@@ -501,14 +534,22 @@ class AndroidMod {
         case 1:refresh();notice="已排队查询全部服务器";break;
         case 2:newForm({});break;
         case 3:dismiss();break;
-        case 4:if(page>0)--page;latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
-        case 5:++page;latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
+        case 4:if(page>0)--page;clearSelection();latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
+        case 5:++page;clearSelection();latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
         case 6:selected=hit.id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);if(auto s=ServerStore::getInstance().get(selected))enqueue(*s,true);break;
         case 7:save();break;
         case 8:form=false;confirm=false;pl::input::hideKeyboard();break;
         case 9:confirm=true;pl::input::hideKeyboard();break;
         case 10:focus=0;nameEdit.end(name);pl::input::showKeyboard();break;
         case 11:focus=1;addressEdit.end(address);pl::input::showKeyboard();break;
+        case 15:{
+            // 加入选中的服务器：仅在选中项仍有效且没有在途请求时发起，重复点击直接忽略。
+            if(joining.load()){notice="正在加入，请稍候";break;}
+            auto server=joinTarget();
+            if(!server){notice="请先选择一台可用的服务器";break;}
+            joining.store(true);notice="正在解析地址并加入…";
+            if(!requestServerJoin(server->address,server->port)){joining.store(false);notice="加入功能不可用（界面尚未就绪）";}
+            break;}
         case 14:if(!hit.id.empty())newForm(hit.id);break;
         case 13:++generations[editId];std::erase_if(tasks,[&](const auto& t){return t.server.id==editId;});ServerStore::getInstance().remove(editId);ServerStore::getInstance().save();statuses.erase(editId);clearRowAnimation(editId);clearRowImage("sle.row."+editId);selected.clear();logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);form=confirm=false;break;
         }
@@ -547,6 +588,7 @@ class AndroidMod {
             else if(open)mode=2;
             if(mode==2&&autoRefreshPending){autoRefreshPending=false;refreshOnOpen();}
             if(mode==2){
+                drainJoinNotice();
                 scale=std::max(.5f,std::min(display.width/800.f,display.height/480.f));viewWidth=display.width/scale;viewHeight=display.height/scale;
                 auto rect=[&](float x,float y,float w,float h,std::uint32_t color){commands.push_back({.type=pl::modmenu::DrawCommandType::RectFilled,.x=x*scale,.y=y*scale,.w=w*scale,.h=h*scale,.color=color});};
                 auto text=[&](float x,float y,std::string value,float size=16,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=x*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
@@ -611,6 +653,17 @@ class AndroidMod {
                         hits.push_back({editX,y,35,58,14,s.id});
                         hits.push_back({left,y,editX-left,58,6,s.id});
                     }
+                    // 加入按钮：列表中部、详情图上方居中；没有可用选中项时变暗且不注册点击区。
+                    const bool joinable=joinTarget().has_value();
+                    const bool joinBusy=joining.load();
+                    const bool joinActive=joinable&&!joinBusy;
+                    const float joinWidth=200,joinHeight=36;
+                    const float joinX=(viewWidth-joinWidth)/2,joinY=viewHeight-170-42;
+                    rect(joinX,joinY,joinWidth,joinHeight,joinActive?0xff3fa34a:0xff2c322c);
+                    rect(joinX,joinY,joinWidth,1,joinActive?0xff7fd486:0xff3a423a);
+                    const std::string joinLabel=joinBusy?"正在加入…":"加入游戏";
+                    text(joinX+(joinWidth-textWidth(joinLabel,16))/2,joinY+10,joinLabel,16,joinActive?0xffffffff:0xff8f968f);
+                    if(joinActive)hits.push_back({joinX,joinY,joinWidth,joinHeight,15,{}});
                     float dy=viewHeight-170;rect(left,dy,right-left,110,0xd0252c27);
                     if(auto s=ServerStore::getInstance().get(selected)){
                         std::string bannerId=animationId(bannerAnimation);
@@ -649,7 +702,15 @@ public:
         if(!pl::modmenu::registerModule(module)){active=false;return false;}
         if(!initializeHomeUi(javaVm,modRoot,[this]{openFromHome();},
             [this](float x,float y,int action){pl::input::TouchEvent event{};event.x=x;event.y=y;event.action=action;return touch(event);},
-            [this]{pl::input::KeyEvent event{};event.keyCode=4;event.isKeyDown=true;return key(event);})){
+            [this]{pl::input::KeyEvent event{};event.keyCode=4;event.isKeyDown=true;return key(event);},
+            [this](int status,std::string message){
+                // Java 可能从调用 requestServerJoin 的同一线程同步回报，这里只写 joinMutex 保护的结果区。
+                std::lock_guard guard(joinMutex);
+                joining.store(false);
+                if(!message.empty())joinNotice=std::move(message);
+                else joinNotice=status>0?"已发起加入":status==-2?"正在连接中，请稍候":"加入失败";
+                joinNoticePending=true;
+            })){
             pl::modmenu::unregisterModule(Module);active=false;return false;
         }
         if(!inputRegistered){pl::input::registerKeyCallback([this](const auto& e){return key(e);});inputRegistered=true;}
@@ -658,7 +719,7 @@ public:
         __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Enabled home-screen server entry and two workers");return true;
     }
     bool disable(){
-        active=false;changed.notify_all();if(renderer.joinable())renderer.join();for(auto& t:workers)if(t.joinable())t.join();workers.clear();
+        active=false;if(joining.exchange(false))cancelServerJoin();changed.notify_all();if(renderer.joinable())renderer.join();for(auto& t:workers)if(t.joinable())t.join();workers.clear();
         {std::lock_guard lock(mutex);open=form=false;hits.clear();tasks.clear();rowAnimations.clear();rowImages.clear();rowImageBytes=0;}
         latencyProbe.stop();
         pl::input::hideKeyboard();closeHomeUi();pl::modmenu::unregisterModule(Module);return ServerStore::getInstance().save();

@@ -2,6 +2,7 @@ package cn.owoser.sle;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -13,6 +14,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.net.Uri;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -24,9 +26,17 @@ import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -62,10 +72,56 @@ public final class HomeOverlay {
     private static Runnable focusConfirmation;
 
     private HomeOverlay() {}
+    /** 加入请求的落地组件：LeviLauncher 自己的深链入口，会按游戏是否运行选择冷启动或热投递。 */
+    private static final String JOIN_HANDLER_CLASS = "org.levimc.launcher.ui.activities.IntentHandler";
+    /** 域名解析的最长等待；超时即放弃本次加入，不会发起任何 Intent。 */
+    private static final long JOIN_RESOLVE_TIMEOUT_MS = 4000L;
+    /** 解析线程池固定 2 线程、SynchronousQueue 直接交接（不排队），并发时拒绝而不是无限堆线程。 */
+    private static final ThreadPoolExecutor JOIN_RESOLVER = new ThreadPoolExecutor(
+            2, 2, 10L, TimeUnit.SECONDS, new SynchronousQueue<Runnable>(),
+            new ThreadFactory() {
+                @Override public Thread newThread(Runnable task) {
+                    Thread thread = new Thread(task, "SLE-join-dns");
+                    thread.setDaemon(true);
+                    return thread;
+                }
+            },
+            new ThreadPoolExecutor.AbortPolicy());
+    private static final Object JOIN_LOCK = new Object();
+    /** 每次加入请求的令牌：DNS 返回时令牌已过期就丢弃结果，避免关闭列表后仍然连服。 */
+    private static long joinGeneration;
+    private static boolean joinInFlight;
+    /**
+     * 本模组发起的加入会话：只有它会在"离开世界并停在 play_screen"时补一次 BACK 回首页。
+     * 判据完全来自可观测状态：preloader 的 HUD/暂停菜单/菜单查询 + 资源包首页双标记 PixelCopy。
+     */
+    private static final long OWNED_JOIN_TIMEOUT_MS = 15L * 60L * 1000L;
+    private static final long OWNED_JOIN_SAMPLE_MS = 450L;
+    private static final long OWNED_JOIN_MENU_HOLD_MS = 900L;
+    private static boolean ownedJoinArmed;
+    private static long ownedJoinAt;
+    private static boolean ownedJoinSeenHud;
+    private static boolean ownedJoinSeenPause;
+    private static long ownedJoinMenuSince;
+    private static boolean ownedJoinNavDone;
+    private static long ownedNavSampleAt;
+    private static boolean homeMarkerProbeInFlight;
+    private static long homeMarkerCheckedAt;
+    private static volatile boolean homeMarkersPresent;
+    private static boolean playMarkerProbeInFlight;
+    private static long playMarkerCheckedAt;
+    private static volatile boolean playMarkersPresent;
+    private static Method hudScreenOpenMethod;
+    private static Method pauseMenuOpenMethod;
+    private static Method showingMenuMethod;
+    private static boolean uiStateResolved;
+    private static boolean uiStateUnavailable;
+
     private static native boolean nativeBindMainActivity(Class<?> mainActivityClass);
     public static native void nativeOpen();
     public static native boolean nativeTouch(float x, float y, int action);
     public static native boolean nativeBack();
+    private static native void nativeJoinStatus(int status, String message);
 
     /**
      * 与列表绘制使用完全相同的字体配置测量文字宽度（ANTI_ALIAS_FLAG + Typeface.DEFAULT + max(1,size)）。
@@ -82,8 +138,151 @@ public final class HomeOverlay {
         }
     }
 
+    /**
+     * 加入选中的服务器：地址是 IPv4 字面量时直接使用，域名则在后台线程解析（最多 4 秒）。
+     * 结果回到主线程后才会构造 minecraft://connect 深链并启动 LevilLauncher 的 IntentHandler，
+     * 因此 DNS 期间关闭列表、模块被禁用或界面销毁都不会留下迟到的连接。
+     */
+    public static void joinServer(final String address, final int port) {
+        if (address == null || address.trim().isEmpty()) { reportJoin(-1, "服务器地址为空"); return; }
+        if (port <= 0 || port > 65535) { reportJoin(-1, "服务器端口无效"); return; }
+        final String host = address.trim();
+        final long token;
+        synchronized (JOIN_LOCK) {
+            if (joinInFlight) { reportJoin(-2, "正在连接中，请稍候"); return; }
+            joinInFlight = true;
+            token = ++joinGeneration;
+        }
+        // 绑定发起时的界面身份：迟到的 DNS 结果只能在同一个覆盖层会话里落地。
+        final long epochAtStart = generation;
+        final long sessionAtStart = activeSession;
+        final Activity activityAtStart = activity;
+        String literal = literalIpv4(host);
+        if (literal != null) {
+            final String target = literal;
+            UI.post(() -> launchJoin(token, target, port, epochAtStart, sessionAtStart, activityAtStart));
+            return;
+        }
+        try {
+            JOIN_RESOLVER.execute(() -> {
+                String resolved = null;
+                try { resolved = resolveJoinHost(host); } catch (Throwable ignored) { resolved = null; }
+                final String target = resolved;
+                UI.post(() -> {
+                    if (target == null) { finishJoin(token, -4, "无法解析服务器地址"); return; }
+                    launchJoin(token, target, port, epochAtStart, sessionAtStart, activityAtStart);
+                });
+            });
+        } catch (RejectedExecutionException busy) {
+            finishJoin(token, -6, "解析线程繁忙，请稍后重试");
+            return;
+        }
+        UI.postDelayed(() -> expireJoin(token), JOIN_RESOLVE_TIMEOUT_MS);
+    }
+
+    /** 解析超时：令牌仍然有效时才回报失败，避免覆盖已经落地的结果。 */
+    private static void expireJoin(long token) {
+        synchronized (JOIN_LOCK) { if (!joinInFlight || token != joinGeneration) return; }
+        finishJoin(token, -7, "解析地址超时，请检查网络后重试");
+    }
+
+    /** 取消尚未落地的加入请求：令牌失效后 DNS 结果与待执行的 startActivity 都会被丢弃。 */
+    public static void cancelJoin() {
+        synchronized (JOIN_LOCK) {
+            joinInFlight = false;
+            ++joinGeneration;
+        }
+    }
+
+    private static void launchJoin(long token, String host, int port,
+                                   long epochAtStart, long sessionAtStart, Activity activityAtStart) {
+        if (!isJoinCurrent(token)) return;
+        // 覆盖层已关闭、被重建、换过会话或换了 Activity 时一律丢弃，避免迟到结果在别的界面发起连接。
+        if (closed || epochAtStart != generation || sessionAtStart != activeSession
+                || activity == null || activity != activityAtStart) {
+            finishJoin(token, -8, "界面已切换，已取消加入");
+            return;
+        }
+        Activity current = activity;
+        if (current.isFinishing() || current.isDestroyed()) {
+            finishJoin(token, -3, "界面已关闭，已取消加入");
+            return;
+        }
+        try {
+            Uri uri = new Uri.Builder()
+                    .scheme("minecraft")
+                    .authority("connect")
+                    .appendQueryParameter("serverUrl", host)
+                    .appendQueryParameter("serverPort", Integer.toString(port))
+                    .build();
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setClassName(current, JOIN_HANDLER_CLASS);
+            intent.setData(uri);
+            current.startActivity(intent);
+            Log.i(TAG, "Join request dispatched: " + host + ":" + port);
+            // 先让宿主把 joining 清掉（nativeJoinStatus 同步回调），再收起覆盖层，
+            // 保证 C++ 侧不会把这次收尾当成用户取消而后又发一次 cancelJoin。
+            finishJoin(token, 1, "正在加入 " + host + ":" + port);
+            armOwnedJoinNavigation();
+            closeActiveSession();
+            publishSnapshot(isBlocked(current));
+        } catch (Throwable failure) {
+            Log.w(TAG, "joinServer failed", failure);
+            finishJoin(token, -5, "无法发起加入请求");
+        }
+    }
+
+    private static boolean isJoinCurrent(long token) {
+        synchronized (JOIN_LOCK) { return joinInFlight && token == joinGeneration; }
+    }
+
+    private static void finishJoin(long token, int status, String message) {
+        synchronized (JOIN_LOCK) {
+            if (!joinInFlight || token != joinGeneration) return;
+            joinInFlight = false;
+            ++joinGeneration;
+        }
+        reportJoin(status, message);
+    }
+
+    private static void reportJoin(int status, String message) {
+        try { nativeJoinStatus(status, message == null ? "" : message); }
+        catch (Throwable failure) { Log.w(TAG, "nativeJoinStatus failed", failure); }
+    }
+
+    /** 已是 IPv4 字面量时原样返回（规范化点分十进制），否则返回 null 表示需要解析。 */
+    private static String literalIpv4(String text) {
+        String[] parts = text.split("\\.", -1);
+        if (parts.length != 4) return null;
+        StringBuilder normalized = new StringBuilder();
+        for (String part : parts) {
+            if (part.isEmpty() || part.length() > 3) return null;
+            for (int i = 0; i < part.length(); ++i) {
+                char c = part.charAt(i);
+                if (c < '0' || c > '9') return null;
+            }
+            int value = Integer.parseInt(part);
+            if (value > 255) return null;
+            if (normalized.length() > 0) normalized.append('.');
+            normalized.append(value);
+        }
+        return normalized.toString();
+    }
+
+    /** 域名解析优先 IPv4；没有 A 记录时才退回 IPv6。阻塞式，只在固定线程池里调用。 */
+    private static String resolveJoinHost(String address) throws Exception {
+        InetAddress[] addresses = InetAddress.getAllByName(address);
+        String ipv4 = null, ipv6 = null;
+        for (InetAddress candidate : addresses) {
+            if (candidate instanceof Inet4Address) { if (ipv4 == null) ipv4 = candidate.getHostAddress(); }
+            else if (candidate instanceof Inet6Address) { if (ipv6 == null) ipv6 = candidate.getHostAddress(); }
+        }
+        return ipv4 != null ? ipv4 : ipv6;
+    }
+
     public static synchronized void install(String modRoot) throws Exception {
         final long epoch = ++generation;
+        cancelJoin();
         closed = false;
         snapshot = UNKNOWN;
         resolveMethods(true);
@@ -215,6 +414,8 @@ public final class HomeOverlay {
     }
 
     public static synchronized void close() {
+        // 模块卸载/界面销毁时作废未落地的加入请求，迟到的 DNS 结果不会再启动游戏。
+        cancelJoin();
         closed = true;
         final long epoch = ++generation;
         snapshot = UNKNOWN;
@@ -431,6 +632,258 @@ public final class HomeOverlay {
         } catch (Exception ignored) { snapshot = UNKNOWN; }
     }
 
+
+    /** 解析 preloader 暴露的 UI 状态查询（Launcher 1.6.0 的 PreloaderInput 静态 native 方法）。 */
+    private static void resolveUiStateProbe() {
+        if (uiStateResolved || uiStateUnavailable) return;
+        try {
+            ClassLoader loader = app == null ? HomeOverlay.class.getClassLoader() : app.getClassLoader();
+            Class<?> input = Class.forName("org.levimc.launcher.preloader.PreloaderInput", false, loader);
+            hudScreenOpenMethod = input.getMethod("isHudScreenOpen");
+            pauseMenuOpenMethod = input.getMethod("isPauseMenuOpen");
+            showingMenuMethod = input.getMethod("isShowingMenu");
+            uiStateResolved = true;
+            Log.i(TAG, "Preloader UI state probe resolved");
+        } catch (Throwable failure) {
+            uiStateUnavailable = true;
+            Log.w(TAG, "Preloader UI state probe unavailable", failure);
+        }
+    }
+
+    /** 加入请求成功落地后开始跟踪这个会话：只有它退出世界时才会被导航回首页。 */
+    private static void armOwnedJoinNavigation() {
+        resolveUiStateProbe();
+        ownedJoinArmed = true;
+        ownedJoinAt = SystemClock.uptimeMillis();
+        ownedJoinSeenHud = false;
+        ownedJoinSeenPause = false;
+        ownedJoinMenuSince = 0L;
+        ownedJoinNavDone = false;
+        ownedNavSampleAt = 0L;
+        Log.i(TAG, "Owned join armed (return-to-home navigation)");
+    }
+
+    private static boolean uiState(Method method) {
+        if (method == null) return false;
+        try { return Boolean.TRUE.equals(method.invoke(null)); } catch (Throwable ignored) { return false; }
+    }
+
+    /**
+     * 每 450 ms 采样一次 UI 状态：
+     * 1) 必须先看到 HUD（证明真的进了世界）；
+     * 2) HUD 与暂停菜单都关闭、isShowingMenu 为真、且首页双标记不可见 —— 说明停在某个非首页菜单（play_screen）；
+     * 3) 该状态连续保持 900 ms 才补一次 BACK，每个加入会话最多一次，绝不重复或定时连按。
+     */
+    private static void pollOwnedJoinNavigation() {
+        if (!ownedJoinArmed || ownedJoinNavDone) return;
+        long now = SystemClock.uptimeMillis();
+        if (now - ownedJoinAt > OWNED_JOIN_TIMEOUT_MS) {
+            ownedJoinArmed = false;
+            Log.i(TAG, "Owned join navigation expired without returning home");
+            return;
+        }
+        if (now - ownedNavSampleAt < OWNED_JOIN_SAMPLE_MS) return;
+        ownedNavSampleAt = now;
+        boolean hud = uiState(hudScreenOpenMethod);
+        boolean pause = uiState(pauseMenuOpenMethod);
+        boolean menu = uiState(showingMenuMethod);
+        if (hud && !ownedJoinSeenHud) {
+            ownedJoinSeenHud = true;
+            Log.i(TAG, "Owned join: HUD seen, session is in world");
+        }
+        if (pause && !ownedJoinSeenPause) {
+            ownedJoinSeenPause = true;
+            Log.i(TAG, "Owned join: pause menu seen");
+        }
+        maybeProbeHomeMarkers();
+        maybeProbePlayMarkers();
+        // 必须先在本次会话里真实见过 HUD（进入世界），否则退回首页这件事与我们无关。
+        if (!ownedJoinSeenHud) return;
+        // 只有资源包在 play_screen 上画出的双标记可见时才是"正向证明"，减法判据一律不触发导航。
+        if (!playMarkersPresent) {
+            ownedJoinMenuSince = 0L;
+            return;
+        }
+        if (homeMarkersPresent) {
+            ownedJoinMenuSince = 0L;
+            Log.i(TAG, "Owned join: play markers visible but home markers also present, skip");
+            return;
+        }
+        if (ownedJoinMenuSince == 0L) {
+            ownedJoinMenuSince = now;
+            Log.i(TAG, "Owned join: play_screen markers visible (hud=" + hud + " pause=" + pause + " menu=" + menu + ")");
+        }
+        if (now - ownedJoinMenuSince >= OWNED_JOIN_MENU_HOLD_MS) {
+            ownedJoinNavDone = true;
+            ownedJoinArmed = false;
+            Log.i(TAG, "Owned join: sending one BACK to leave play_screen (positive marker)");
+            pressGameBack();
+        }
+    }
+
+    /** 通过 Activity 的按键分发注入一次 BACK：走游戏自己的 dispatchKeyEvent，绝不直接 finish Activity。 */
+    private static void pressGameBack() {
+        final Activity current = activity;
+        if (current == null || current.isFinishing() || current.isDestroyed()) {
+            Log.w(TAG, "Owned join: activity unavailable, BACK skipped");
+            return;
+        }
+        UI.post(() -> {
+            try {
+                long now = SystemClock.uptimeMillis();
+                current.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
+                current.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
+            } catch (Throwable failure) {
+                Log.w(TAG, "Owned join: BACK injection failed", failure);
+            }
+        });
+    }
+
+    /** 采样右上区域是否出现资源包画的首页双标记；只有 armed 会话才会用到。 */
+    private static void maybeProbeHomeMarkers() {
+        if (homeMarkerProbeInFlight || view == null) return;
+        long now = SystemClock.uptimeMillis();
+        if (now - homeMarkerCheckedAt < 1200L) return;
+        homeMarkerCheckedAt = now;
+        final Activity owner = activity;
+        final OverlayView surface = view;
+        if (owner == null || owner.isFinishing() || owner.isDestroyed() || surface == null) return;
+        int width = surface.getWidth();
+        int height = surface.getHeight();
+        if (width <= 0 || height <= 0) return;
+        int[] location = new int[2];
+        surface.getLocationInWindow(location);
+        final int left = location[0] + (int) (width * 0.5f);
+        final int top = location[1];
+        final int copyWidth = Math.max(1, location[0] + width - left);
+        final int copyHeight = Math.max(1, (int) (height * 0.24f));
+        final Bitmap shot = Bitmap.createBitmap(copyWidth, copyHeight, Bitmap.Config.ARGB_8888);
+        homeMarkerProbeInFlight = true;
+        final SurfaceView gameSurface = findSurfaceView(owner);
+        PixelCopy.OnPixelCopyFinishedListener listener = result -> {
+            homeMarkerProbeInFlight = false;
+            boolean present = false;
+            try { present = result == PixelCopy.SUCCESS && containsHomeMarkers(shot); }
+            catch (Throwable ignored) { present = false; }
+            shot.recycle();
+            if (present != homeMarkersPresent) {
+                homeMarkersPresent = present;
+                Log.i(TAG, "Owned join: home markers " + (present ? "visible" : "hidden"));
+            }
+        };
+        try {
+            Rect source = new Rect(left, top, left + copyWidth, top + copyHeight);
+            if (gameSurface != null) {
+                int[] surfaceLocation = new int[2];
+                gameSurface.getLocationInWindow(surfaceLocation);
+                source.offset(-surfaceLocation[0], -surfaceLocation[1]);
+                PixelCopy.request(gameSurface, source, shot, listener, UI);
+            } else {
+                source.offset(-location[0], -location[1]);
+                PixelCopy.request(owner.getWindow(), source, shot, listener, UI);
+            }
+        } catch (Throwable failure) {
+            homeMarkerProbeInFlight = false;
+            shot.recycle();
+        }
+    }
+
+    /** play_screen 的两个 1x1 标记：(198,195,195) 与 (195,195,198)，只在 play_screen 命名空间插入。 */
+    private static final int PLAY_MARKER_SET = 195;
+    private static final int PLAY_MARKER_HIGH = 198;
+
+    private static boolean playMarkerLeftPixel(int pixel) {
+        int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
+        return red == PLAY_MARKER_HIGH && green == PLAY_MARKER_SET && blue == PLAY_MARKER_SET;
+    }
+
+    private static boolean playMarkerRightPixel(int pixel) {
+        int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
+        return red == PLAY_MARKER_SET && green == PLAY_MARKER_SET && blue == PLAY_MARKER_HIGH;
+    }
+
+    /** 左上角区域同时存在两个 play 标记（水平相隔 1~8 像素）才认为正处在 play_screen。 */
+    private static boolean containsPlayMarkers(Bitmap shot) {
+        int width = shot.getWidth();
+        int height = shot.getHeight();
+        if (width < 2 || height < 1) return false;
+        int[] row = new int[width];
+        for (int y = 0; y < height; ++y) {
+            shot.getPixels(row, 0, width, 0, y, width, 1);
+            for (int x = 0; x < width; ++x) {
+                if (!playMarkerLeftPixel(row[x])) continue;
+                for (int dx = 1; dx <= 8 && x + dx < width; ++dx) {
+                    if (playMarkerRightPixel(row[x + dx])) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 采样左上角是否出现 play_screen 标记；只有 armed 会话才会用到。 */
+    private static void maybeProbePlayMarkers() {
+        if (playMarkerProbeInFlight || view == null) return;
+        long now = SystemClock.uptimeMillis();
+        if (now - playMarkerCheckedAt < 700L) return;
+        playMarkerCheckedAt = now;
+        final Activity owner = activity;
+        final OverlayView surface = view;
+        if (owner == null || owner.isFinishing() || owner.isDestroyed() || surface == null) return;
+        int[] location = new int[2];
+        surface.getLocationInWindow(location);
+        final int copyWidth = 160, copyHeight = 160;
+        int screenWidth = surface.getWidth(), screenHeight = surface.getHeight();
+        if (screenWidth <= 0 || screenHeight <= 0) return;
+        final Bitmap shot = Bitmap.createBitmap(copyWidth, copyHeight, Bitmap.Config.ARGB_8888);
+        playMarkerProbeInFlight = true;
+        final SurfaceView gameSurface = findSurfaceView(owner);
+        PixelCopy.OnPixelCopyFinishedListener listener = result -> {
+            playMarkerProbeInFlight = false;
+            boolean present = false;
+            try { present = result == PixelCopy.SUCCESS && containsPlayMarkers(shot); }
+            catch (Throwable ignored) { present = false; }
+            shot.recycle();
+            if (present != playMarkersPresent) {
+                playMarkersPresent = present;
+                Log.i(TAG, "Owned join: play_screen markers " + (present ? "visible" : "hidden"));
+            }
+        };
+        try {
+            Rect source = new Rect(location[0], location[1], location[0] + copyWidth, location[1] + copyHeight);
+            if (gameSurface != null) {
+                int[] surfaceLocation = new int[2];
+                gameSurface.getLocationInWindow(surfaceLocation);
+                source.offset(-surfaceLocation[0], -surfaceLocation[1]);
+                PixelCopy.request(gameSurface, source, shot, listener, UI);
+            } else {
+                source.offset(-location[0], -location[1]);
+                PixelCopy.request(owner.getWindow(), source, shot, listener, UI);
+            }
+        } catch (Throwable failure) {
+            playMarkerProbeInFlight = false;
+            shot.recycle();
+        }
+    }
+
+    /** 右上区域同时存在 #C6C6C9（左标记）与 #C6C6C3（右标记）才认为仍在首页。 */
+    private static boolean containsHomeMarkers(Bitmap shot) {
+        int width = shot.getWidth();
+        int height = shot.getHeight();
+        if (width < 2 || height < 1) return false;
+        int[] row = new int[width];
+        boolean left = false, right = false;
+        for (int y = 0; y < height && !(left && right); ++y) {
+            shot.getPixels(row, 0, width, 0, y, width, 1);
+            for (int x = 0; x < width; ++x) {
+                int pixel = row[x];
+                if (!left && entryMarkerLeftPixel(pixel)) left = true;
+                else if (!right && entryMarkerPixel(pixel)) right = true;
+                if (left && right) break;
+            }
+        }
+        return left && right;
+    }
+
     private static void tick() {
         boolean available = refreshEnvironment();
         if (view != null) view.pollIme();
@@ -439,6 +892,7 @@ public final class HomeOverlay {
             closeActiveSession();
         }
         publishSnapshot(blocked);
+        pollOwnedJoinNavigation();
     }
 
     private static void disposeView() {

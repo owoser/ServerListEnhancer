@@ -28,6 +28,8 @@
 #include "ll/api/io/Logger.h"
 #include "ll/api/service/TargetedBedrock.h"
 
+#include "JoinService.h"
+
 #include "mc/client/game/ClientInstance.h"
 #include "mc/client/gui/CaretMeasureData.h"
 #include "mc/client/gui/FontHandle.h"
@@ -102,6 +104,8 @@ Rect                gCloseHit{};
 Rect                gAddBtn{};
 Rect                gRefreshBtn{};
 Rect                gCloseBtn{};
+Rect                gJoinBtn{};
+bool                gJoinQueued{};
 Rect                gPrevBtn{};
 Rect                gNextBtn{};
 Rect                gSaveBtn{};
@@ -241,6 +245,21 @@ void drawVanillaButton(
     drawText(ctx, font, textRect, label, mce::Color{shade,shade,shade,1.0f}, fontSize, ui::TextAlignment::Center);
 }
 
+// 原版绿色按钮（开始游玩同款贴图）：常态即高亮绿，按下转深绿，文字为白色。
+void drawGreenButton(
+    MinecraftUIRenderContext& ctx, Font& font, Rect const& r,
+    std::string_view label, bool hot, bool enabled = true, float fontSize = 1.0f
+) {
+    bool const pressed = hot && enabled && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (enabled) drawVanillaButtonSkin(ctx, r, pressed ? vanilla::ButtonState::Pressed : vanilla::ButtonState::Hover);
+    else drawVanillaButtonSkin(ctx, r, vanilla::ButtonState::Normal);
+    float const height = font.getWrapHeight() * fontSize;
+    float const y = std::floor((r.y0 + r.y1 - height) * 0.5f) + (pressed ? 1.0f : 0.0f);
+    Rect const textRect{r.x0 + 3.0f, y, r.x1 - 3.0f, y + height};
+    float const shade = !enabled ? 0.45f : hot ? 1.0f : 0.94f;
+    drawText(ctx, font, textRect, label, mce::Color{shade,shade,shade,1.0f}, fontSize, ui::TextAlignment::Center);
+}
+
 std::string statusKey(SavedServer const& s) { return endpointKey(s.address,s.port); }
 void refreshServers(bool force=false) {
     for (auto const& e:ServerStore::getInstance().list())
@@ -325,13 +344,14 @@ void drawListPage(MinecraftUIRenderContext& ctx,Font& font,float sw,float sh,flo
  drawVanillaButton(ctx,font,gAddBtn,"添加服务器",mouseSeen&&gAddBtn.contains(mx,my));
  bool wide=sw>=1000.f;
  float contentTop=panel.y0+48, bottom=panel.y1-40;
- Rect list{panel.x0+12,contentTop,wide?panel.x0+panel.width()*.60f:panel.x1-12,wide?bottom:bottom-std::clamp(sh*.25f,100.f,160.f)-10};
- Rect detail=wide?Rect{list.x1+12,contentTop,panel.x1-12,bottom}:Rect{list.x0,list.y1+10,list.x1,bottom};
+ Rect list{panel.x0+12,contentTop,wide?panel.x0+panel.width()*.60f:panel.x1-12,wide?bottom-46.f:bottom-std::clamp(sh*.25f,100.f,160.f)-46.f};
+ Rect detail=wide?Rect{list.x1+12,contentTop,panel.x1-12,bottom}:Rect{list.x0,list.y1+46,list.x1,bottom};
  auto entries=ServerStore::getInstance().list();
  int visible=std::max(1,static_cast<int>(list.height()/66.f)),maxScroll=std::max(0,static_cast<int>(entries.size())-visible);
  std::lock_guard lock(gMutex);
  gPanel=panel;gPanelValid=true;gRows.clear();gScrollRow=std::clamp(gScrollRow,0,maxScroll);
- if(!entries.empty()&&std::none_of(entries.begin(),entries.end(),[](auto const& e){return e.id==gSelectedId;}))gSelectedId=entries.front().id;
+ if(std::none_of(entries.begin(),entries.end(),[](auto const& e){return e.id==gSelectedId;}))gSelectedId.clear();
+ auto selected=std::find_if(entries.begin(),entries.end(),[](auto const& e){return e.id==gSelectedId;});
  for(int i=0;i<visible&&i+gScrollRow<static_cast<int>(entries.size());++i){
   auto const& e=entries[i+gScrollRow];bool addressValid=validServerEndpoint(e.address,e.port);auto status=ServerStatus::getInstance().get(statusKey(e));auto visual=resolvedVisual(e,status);
   Rect row{list.x0,list.y0+i*66.f,list.x1,list.y0+i*66.f+62};
@@ -362,8 +382,17 @@ void drawListPage(MinecraftUIRenderContext& ctx,Font& font,float sw,float sh,flo
   auto version=status&&!status->version.empty()?status->version:"版本未知";
   drawText(ctx,font,{right-110,row.y0+43,right,row.y0+56},version,color8(225,225,225),1,ui::TextAlignment::Right);
  }
+ // 选中服务器后才出现“加入游戏”：绿色原版按钮，点击直连。
+ gJoinBtn=Rect{};
+ if(selected!=entries.end()){
+  bool const addressValid=validServerEndpoint(selected->address,selected->port);
+  float const bw=std::min(180.f,list.width()*.42f),bh=26.f,cx=(list.x0+list.x1)*.5f;
+  float const by=list.y1+10.f;
+  gJoinBtn={cx-bw*.5f,by,cx+bw*.5f,by+bh};
+  bool const hot=mouseSeen&&gJoinBtn.contains(mx,my);
+  drawGreenButton(ctx,font,gJoinBtn,gJoinQueued?"正在连接...":"加入游戏",hot,addressValid&&!gJoinQueued);
+ }
  fillRect(ctx,detail,color8(30,30,30),.65f);border(ctx,detail,color8(96,96,96));
- auto selected=std::find_if(entries.begin(),entries.end(),[](auto const& e){return e.id==gSelectedId;});
  if(selected!=entries.end()){
   auto status=ServerStatus::getInstance().get(statusKey(*selected));auto visual=resolvedVisual(*selected,status);
   Rect image=wide?Rect{detail.x0+8,detail.y0+8,detail.x1-8,detail.y0+std::min(detail.height()*.48f,detail.width()*.6f)}:Rect{detail.x0+7,detail.y0+7,detail.x0+detail.width()*.46f,detail.y1-7};
@@ -372,7 +401,7 @@ void drawListPage(MinecraftUIRenderContext& ctx,Font& font,float sw,float sh,flo
   auto intro=visual.introText.empty()?"欢迎来到本服务器":visual.introText;
   drawText(ctx,font,text,intro,color8(244,244,244),1.f);
   if(status&&status->state==ServerStatusState::Failed)drawText(ctx,font,{text.x0,detail.y1-17,text.x1,detail.y1-4},"暂时无法更新，正在显示缓存",color8(218,218,218),1);
- }else drawText(ctx,font,{detail.x0+14,detail.y0+16,detail.x1-14,detail.y0+30},"添加服务器后查看详细信息",color8(235,235,235),1);
+ }else drawText(ctx,font,{detail.x0+14,detail.y0+16,detail.x1-14,detail.y0+30},"选择服务器查看详细信息",color8(235,235,235),1);
  gPrevBtn={panel.x0+12,panel.y1-31,panel.x0+40,panel.y1-7};gNextBtn={panel.x0+46,panel.y1-31,panel.x0+74,panel.y1-7};
  drawVanillaButton(ctx,font,gPrevBtn,"<",mouseSeen&&gPrevBtn.contains(mx,my));drawVanillaButton(ctx,font,gNextBtn,">",mouseSeen&&gNextBtn.contains(mx,my));
  drawText(ctx,font,{panel.x0+84,panel.y1-24,panel.x1-140,panel.y1-9},std::to_string(entries.size())+" 台服务器",color8(230,230,230),1);
@@ -487,7 +516,7 @@ bool saveDraft(){
  if(!parsed){gFormError=parsed.error;gCaretAt=Clock::now();return false;}
  auto srv=draftToServer();gFormId=ServerStore::getInstance().upsert(srv);
  ServerStore::getInstance().save();ServerStatus::getInstance().request(statusKey(srv),srv.address,srv.port,true);
- gSelectedId=gFormId;gFormError.clear();gPage=Page::List;return true;
+ gJoinBtn={};gFormError.clear();gPage=Page::List;return true;
 }
 void pollKeyboard(){
  DWORD pid{};GetWindowThreadProcessId(GetForegroundWindow(),&pid);
@@ -655,6 +684,44 @@ void startAddForm() {
     probeLogger().info("[UI] form opened (add)");
 }
 
+// 列表页“加入游戏”：取当前选中条目，交给原版 joiner 直连。
+void joinSelected() {
+    std::string id;
+    {
+        std::lock_guard lock(gMutex);
+        if (!gOpen || gPage != Page::List || gJoinQueued) return;
+        id = gSelectedId;
+    }
+    auto entries = ServerStore::getInstance().list();
+    auto it      = std::find_if(entries.begin(), entries.end(), [&](auto const& e) { return e.id == id; });
+    if (it == entries.end()) {
+        probeLogger().info("[UI] join: no selection");
+        return;
+    }
+    if (!validServerEndpoint(it->address, it->port)) {
+        probeLogger().warn("[UI] join: invalid address '{}'", it->address);
+        respondError("地址无效，请先编辑服务器");
+        return;
+    }
+    auto status = ServerStatus::getInstance().get(statusKey(*it));
+    auto name = !it->name.empty() ? it->name : status && !status->name.empty() ? status->name : statusKey(*it);
+    { std::lock_guard lock(gMutex); gJoinQueued = true; }
+    (void)sle::client::joinServer(it->address, it->port, name, [](bool submitted, std::string const& message) {
+        std::lock_guard lock(gMutex);
+        gJoinQueued = false;
+        gJoinBtn = {};
+        if (submitted) {
+            gOpen = false;
+            gPanelValid = false;
+            gButtonValid = false;
+            gRows.clear();
+        } else {
+            gToast = message;
+            gToastAt = Clock::now();
+        }
+    });
+}
+
 SavedServer draftToServer() {
     SavedServer srv;
     if(auto existing=ServerStore::getInstance().get(gFormId))srv=*existing;
@@ -763,7 +830,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     Rect  button{};
     bool  buttonValid{};
     std::vector<RowHit> rows;
-    Rect  addBtn{}, refreshBtn{}, closeBtn{}, prevBtn{}, nextBtn{}, saveBtn{}, cancelBtn{}, yesBtn{}, noBtn{};
+    Rect  addBtn{}, refreshBtn{}, closeBtn{}, prevBtn{}, nextBtn{}, saveBtn{}, cancelBtn{}, yesBtn{}, noBtn{}, joinBtn{};
     Rect  addHit{}, refreshHit{}, closeHit{}, deleteBtn{};
     std::vector<FormField> fields;
     std::string            formId;
@@ -777,6 +844,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         addBtn      = gAddBtn;
         refreshBtn  = gRefreshBtn;
         closeBtn    = gCloseBtn;
+        joinBtn     = gJoinBtn;
         addHit      = gAddHit;
         refreshHit  = gRefreshHit;
         closeHit    = gCloseHit;
@@ -800,6 +868,9 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
             std::lock_guard lock(gMutex);
             gOpen = true;
             gPage = Page::List;
+            gSelectedId.clear();
+            gJoinBtn = {};
+            gJoinQueued = false;
         }
         return;
     }
@@ -809,6 +880,11 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
             probeLogger().info("[UI] hit close");
             std::lock_guard lock(gMutex);
             gOpen = false;
+            return;
+        }
+        if (joinBtn.width() > 0 && joinBtn.contains(uiX, uiY)) {
+            probeLogger().info("[UI] hit join");
+            joinSelected();
             return;
         }
         if (addBtn.contains(uiX, uiY)) {
@@ -827,11 +903,13 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         if (prevBtn.contains(uiX, uiY)) {
             std::lock_guard lock(gMutex);
             gScrollRow = std::max(0, gScrollRow - 1);
+            gSelectedId.clear(); gJoinBtn = {};
             return;
         }
         if (nextBtn.contains(uiX, uiY)) {
             std::lock_guard lock(gMutex);
             gScrollRow += 1;
+            gSelectedId.clear(); gJoinBtn = {};
             return;
         }
         for (auto const& row : rows) {
@@ -938,7 +1016,7 @@ void registerProbeOverlay() {
 }
 
 void unregisterProbeOverlay() {
-    {std::lock_guard lock(gMutex);gOpen=false;gVisible=false;gButtonValid=false;gPanelValid=false;gRows.clear();}
+    {std::lock_guard lock(gMutex);gOpen=false;gVisible=false;gButtonValid=false;gPanelValid=false;gRows.clear();gJoinBtn={};gJoinQueued=false;gSelectedId.clear();}
     auto& bus = ll::event::EventBus::getInstance();
     if (gRenderListener) {
         bus.removeListener(gRenderListener);

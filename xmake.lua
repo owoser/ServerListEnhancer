@@ -16,15 +16,15 @@ option("target_type")
     set_values("server", "client")
 option_end()
 
--- LeviLamina 版本可切换：默认 26.60.7（与常见客户端一致），可用 --ll_version=26.60.2 指定
+-- 客户端直连需要 LeviLamina 26.60.8 及其配套 bedrock_runtime_data；两端版本可独立配置
 option("ll_version")
-    set_default("26.60.7")
+    set_default("26.60.8")
     set_showmenu(true)
-    set_description("LeviLamina version, e.g. 26.60.7 / 26.60.2")
+    set_description("LeviLamina version (client joining requires 26.60.8 or later)")
 option_end()
 
 local targetType = get_config("target_type") or "server"
-local llVersion  = get_config("ll_version") or "26.60.7"
+local llVersion  = get_config("ll_version") or "26.60.8"
 
 add_requires("levilamina " .. llVersion, {configs = {target_type = targetType}})
 add_requires("levibuildscript")
@@ -34,9 +34,46 @@ if not has_config("vs_runtime") then
     set_runtimes("MD")
 end
 
+-- 官方 modpacker 固定读取根 manifest.json。客户端使用独立模板，避免给服务端施加客户端最低版本。
+rule("sle.client_modpacker")
+    after_build(function(target)
+        local variables = {
+            modName = "ServerListEnhancer",
+            modFile = "ServerListEnhancer.dll",
+            modVersion = "1.0.0",
+            modPlatform = "client"
+        }
+        local manifest = io.readfile(path.join(os.projectdir(), "manifest-client.json"))
+        assert(manifest, "Missing client manifest template")
+        manifest = manifest:gsub("%${(.-)}", function(key)
+            return variables[key] or "${" .. key .. "}"
+        end)
+
+        local outputdir = path.join(os.projectdir(), "bin", variables.modName)
+        local sourcefile = target:targetfile()
+        local sourcepdb = path.join(path.directory(sourcefile), path.basename(sourcefile) .. ".pdb")
+        os.mkdir(outputdir)
+        os.cp(sourcefile, path.join(outputdir, variables.modFile))
+        if os.isfile(sourcepdb) then
+            os.cp(sourcepdb, path.join(outputdir, path.basename(variables.modFile) .. ".pdb"))
+        end
+        io.writefile(path.join(outputdir, "manifest.json"), manifest)
+        cprint("${bright green}[Mod Packer]: ${reset}client mod generated to " .. outputdir)
+    end)
+rule_end()
+
 target("ServerListEnhancer")
     add_rules("@levibuildscript/linkrule")
-    add_rules("@levibuildscript/modpacker", {modName = "ServerListEnhancer", modFile = "ServerListEnhancer.dll", modVersion = "1.0.0"})
+    if targetType == "client" then
+        add_rules("sle.client_modpacker")
+        on_load(function(target)
+            import("core.base.semver")
+            assert(semver.satisfies(llVersion, ">=26.60.8"),
+                "Windows client requires LeviLamina SDK 26.60.8 or later; got " .. llVersion)
+        end)
+    else
+        add_rules("@levibuildscript/modpacker", {modName = "ServerListEnhancer", modFile = "ServerListEnhancer.dll", modVersion = "1.0.0"})
+    end
     set_kind("shared")
     set_languages("c++23")
     set_symbols("debug")
