@@ -284,10 +284,12 @@ void renderImage(MinecraftUIRenderContext& ctx,Rect r,ImageReference const& ref,
     auto& images=ImageProvider::getInstance();
     images.request(ref,banner); // enqueue only; never download or decode on this thread
     auto animation=images.animation(ref,banner);
-    if(animation&&drawAnimatedImage(ctx,r,animation,true))return;
+    // 图片与面板一起淡入淡出：把整层 alpha 交给贴图绘制，避免只有文字和底板在渐变。
+    float const alpha=gUiAlpha;
+    if(animation&&drawAnimatedImage(ctx,r,animation,true,alpha))return;
     auto path=images.get(ref,banner);
-    if(path && drawNativeImage(ctx,r,*path,true)) return;
-    (void)drawNativeImage(ctx,r,images.builtinPath(banner),true);
+    if(path && drawNativeImage(ctx,r,*path,true,alpha)) return;
+    (void)drawNativeImage(ctx,r,images.builtinPath(banner),true,alpha);
 }
 
 // 行内小按钮（编辑 / 删除）
@@ -671,8 +673,10 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     drawToast(ctx, *font, sw, sh);
     ctx.flushText(0.0f, std::nullopt);
     gMeasureContext=nullptr;gMeasureFont=nullptr;
-    endImageFrame(open&&page==Page::List);
-    ImageProvider::getInstance().tick(open&&page==Page::List);
+    // 淡出期间仍属于同一段可见时间，别在过渡帧里把 GIF 贴图拆掉再重建。
+    bool const listVisibleNow = (open || gFade > 0.002f) && page == Page::List;
+    endImageFrame(listVisibleNow);
+    ImageProvider::getInstance().tick(listVisibleNow);
     static bool wasListVisible{};
     bool const listVisible=open&&page==Page::List;
     if(wasListVisible&&!listVisible)probeLogger().info("[GIF] list hidden, decodedBytes={}",gifMemoryBytes());

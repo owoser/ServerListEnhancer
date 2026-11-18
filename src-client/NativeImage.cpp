@@ -26,7 +26,7 @@
 namespace sle::client {
 
 bool drawNativeImage(
-    MinecraftUIRenderContext& context, vanilla::Rect rectangle, std::filesystem::path const& path, bool contain
+    MinecraftUIRenderContext& context, vanilla::Rect rectangle, std::filesystem::path const& path, bool contain, float alpha
 ) {
     if (path.empty() || !path.is_absolute() || !std::isfinite(rectangle.width())
         || !std::isfinite(rectangle.height()) || rectangle.width() <= 0 || rectangle.height() <= 0) return false;
@@ -64,7 +64,7 @@ bool drawNativeImage(
     }
     static HashedString const material{"ui_textured_and_color"};
     mce::Color const white{1.0f, 1.0f, 1.0f, 1.0f};
-    context.flushImages(white, 1.0f, material);
+    context.flushImages(white, alpha, material);
     context.drawImage(texture->mClientTexture.get(), {rectangle.x0, rectangle.y0},
         {rectangle.width(), rectangle.height()}, {u, v}, {uw, vh}, false);
     context.flushImages(white, 1.0f, material);
@@ -100,7 +100,7 @@ void endImageFrame(bool visible){
   }else ++it;
  }
 }
-bool drawAnimatedImage(MinecraftUIRenderContext& ctx,vanilla::Rect rect,std::shared_ptr<GifAnimation const> const& animation,bool contain){
+bool drawAnimatedImage(MinecraftUIRenderContext& ctx,vanilla::Rect rect,std::shared_ptr<GifAnimation const> const& animation,bool contain,float alpha){
  if(!animation||animation->frames.empty())return false;
  std::lock_guard lock(textureMutex);
  auto now=Clock::now();
@@ -137,7 +137,7 @@ bool drawAnimatedImage(MinecraftUIRenderContext& ctx,vanilla::Rect rect,std::sha
  auto handle=ctx.getTexture(location,false);auto const& texture=handle.mClientTexture.get();if(!texture)return false;
  if(contain){auto scale=std::min(rect.width()/animation->width,rect.height()/animation->height);auto w=scale*animation->width,h=scale*animation->height;rect.x0+=(rect.width()-w)/2;rect.y0+=(rect.height()-h)/2;rect.x1=rect.x0+w;rect.y1=rect.y0+h;}
  static HashedString material("ui_textured_and_color");mce::Color white{1.f,1.f,1.f,1.f};
- ctx.flushImages(white,1.f,material);ctx.drawImage(texture->mClientTexture.get(),{rect.x0,rect.y0},{rect.width(),rect.height()},{0,0},{1,1},false);ctx.flushImages(white,1.f,material);
+ ctx.flushImages(white,alpha,material);ctx.drawImage(texture->mClientTexture.get(),{rect.x0,rect.y0},{rect.width(),rect.height()},{0,0},{1,1},false);ctx.flushImages(white,alpha,material);
  return true;
 }
 } // namespace sle::client
