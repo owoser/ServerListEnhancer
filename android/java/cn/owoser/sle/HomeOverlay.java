@@ -580,6 +580,8 @@ public final class HomeOverlay {
         activeSession = 0L;
         clearFocusGrace();
         if (view != null) {
+            // 视觉上再画约 180ms 淡出；逻辑上已关闭，期间不再接收触摸。
+            if (view.beginDismissFade()) return;
             view.mode = 0;
             view.session = 0L;
             view.commands.clear();
@@ -805,6 +807,15 @@ public final class HomeOverlay {
 
     private static final class OverlayView extends View {
         int mode;
+        // 整层淡入淡出：只改绘制透明度，不动布局、命中判据与加入逻辑。
+        private static final long FADE_DURATION_MS = 180L;
+        private float fadeAlpha = 1f;
+        private float fadeFrom = 1f;
+        private float fadeTo = 1f;
+        private long fadeStartedAt;
+        private boolean fading;
+        private boolean dismissing;
+        private boolean overlayActive;
         long session;
         ArrayList<Command> commands = new ArrayList<>();
         final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -902,9 +913,25 @@ public final class HomeOverlay {
                 listTracking = false;
                 clearFocus();
             }
-            setVisibility(closed || activity == null ? View.GONE : View.VISIBLE);
+            if (closed || activity == null) {
+                overlayActive = false;
+                setVisibility(View.GONE);
+                return;
+            }
+            // 淡出期间节点仍可见，只是不再接收输入；透明度由 onDraw 逐帧推进。
+            setVisibility(View.VISIBLE);
 
             if (visible) {
+                if (!overlayActive) {
+                    overlayActive = true;
+                    fadeAlpha = 0f;
+                    startFade(1f);
+                } else if (dismissing) {
+                    dismissing = false;
+                    startFade(1f);
+                } else if (!fading && fadeAlpha < 0.999f) {
+                    startFade(1f);
+                }
                 setFocusableInTouchMode(true);
                 if (!hasFocus()) requestFocus();
                 invalidate();
@@ -912,7 +939,71 @@ public final class HomeOverlay {
                 setFocusableInTouchMode(false);
                 setFocusable(false);
                 clearFocus();
+                if (!dismissing) overlayActive = false;
+                invalidate();
             }
+        }
+
+        /** 淡入淡出共用：从当前 alpha 平滑推到目标值，按帧间隔推进而不是固定步进。 */
+        private void startFade(float target) {
+            fadeFrom = fadeAlpha;
+            fadeTo = target;
+            fadeStartedAt = SystemClock.uptimeMillis();
+            fading = true;
+        }
+
+        /** 每帧推进透明度：smoothstep 曲线，与 Windows 侧 180ms 过渡保持一致。 */
+        private void advanceFade() {
+            if (!fading) return;
+            long now = SystemClock.uptimeMillis();
+            float t = (now - fadeStartedAt) / (float) FADE_DURATION_MS;
+            if (t < 0f) t = 0f;
+            if (t >= 1f) {
+                fadeAlpha = fadeTo;
+                fading = false;
+                if (fadeAlpha <= 0.001f) {
+                    finishDismiss();
+                    return;
+                }
+                invalidate();
+                return;
+            }
+            fadeAlpha = fadeFrom + (fadeTo - fadeFrom) * (t * t * (3f - 2f * t));
+            postInvalidateOnAnimation();
+        }
+
+        /** 淡出结束才真正收起：清掉旧帧并让节点退到不可见。 */
+        private void finishDismiss() {
+            dismissing = false;
+            fading = false;
+            overlayActive = false;
+            fadeAlpha = 1f;
+            mode = 0;
+            session = 0L;
+            commands.clear();
+            applyVisibility();
+        }
+
+        /** 关闭时启动淡出；没有可画的帧时返回 false，直接走原来的立即收起。 */
+        boolean beginDismissFade() {
+            if (closed || activity == null) return false;
+            if (surfaceWidth() <= 0 || surfaceHeight() <= 0 || commands.isEmpty()) return false;
+            if (dismissing) return true;
+            dismissing = true;
+            overlayActive = true;
+            setFocusableInTouchMode(false);
+            setFocusable(false);
+            clearFocus();
+            startFade(0f);
+            invalidate();
+            return true;
+        }
+
+        /** 把整层透明度乘进颜色 alpha：文字、矩形、线段、圆、三角形共用同一系数。 */
+        private int fadeColor(int color) {
+            if (fadeAlpha >= 0.999f) return color;
+            int alpha = Math.round(((color >>> 24) & 0xFF) * fadeAlpha);
+            return (alpha << 24) | (color & 0x00FFFFFF);
         }
 
         @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
@@ -925,9 +1016,12 @@ public final class HomeOverlay {
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (closed || !home || mode != 2 || session != activeSession) return;
+            // 先推进透明度：淡出期间即使不再有新帧，也按帧率继续重绘直到全透明。
+            advanceFade();
+            if (closed) return;
+            if (!overlayActive && !(home && mode == 2 && session == activeSession)) return;
             if (commands.isEmpty()) {
-                canvas.drawColor(0xFF1C201E);
+                canvas.drawColor(fadeColor(0xFF1C201E));
                 return;
             }
             for (Command command : commands) drawCommand(canvas, command);
@@ -935,7 +1029,7 @@ public final class HomeOverlay {
 
         private void drawCommand(Canvas canvas, Command command) {
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(command.color);
+            paint.setColor(fadeColor(command.color));
             paint.setTypeface(Typeface.DEFAULT);
             switch (command.type) {
                 case 0:
@@ -977,6 +1071,8 @@ public final class HomeOverlay {
                     Bitmap bitmap = IMAGES.get(command.imageId);
                     if (bitmap != null && !bitmap.isRecycled()) {
                         destination.set(command.x, command.y, command.x + command.w, command.y + command.h);
+                        // 图片与文字/形状共用同一整层 alpha，不会有的元素先消失。
+                        pixels.setAlpha(Math.round(255f * fadeAlpha));
                         canvas.drawBitmap(bitmap, null, destination, pixels);
                     }
                     break;
@@ -986,7 +1082,7 @@ public final class HomeOverlay {
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
-            if (closed || activity == null) return false;
+            if (closed || activity == null || dismissing) return false;
             int action = event.getActionMasked();
             if (home && mode == 2 && session == activeSession) {
                 float x = event.getX(), y = event.getY();
