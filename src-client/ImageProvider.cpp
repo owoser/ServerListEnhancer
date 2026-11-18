@@ -576,9 +576,13 @@ struct ImageProvider::Impl {
                 auto const found = entries.find(job.key);
                 if (found != entries.end()) {
                     if (result) found->second.path = result;
+                    // A hidden list cannot retain decoded frames. Reopening must be
+                    // allowed to hydrate its GIF from disk even while the HTTP cache
+                    // is fresh; otherwise only the PNG preview survives for five minutes.
+                    bool const needsAnimation = !visible && bool(animated);
                     if (visible && (success || animated)) found->second.animation = std::move(animated);
                     found->second.pending = false;
-                    found->second.retryAt = Clock::now() + image_detail::RetryDelay;
+                    found->second.retryAt = needsAnimation ? Clock::time_point{} : Clock::now() + image_detail::RetryDelay;
                 }
             }
             {
@@ -591,9 +595,16 @@ struct ImageProvider::Impl {
 
 ImageProvider::ImageProvider() : mImpl(std::make_unique<Impl>()) {}
 ImageProvider::~ImageProvider() { stop(); }
-void ImageProvider::tick(bool visible){
-    std::lock_guard lock(mImpl->mutex);mImpl->visible=visible;auto now=image_detail::Clock::now();
-    for(auto& [key,e]:mImpl->entries)if(!visible||(!e.pending&&now-e.lastUse>std::chrono::seconds(3))){if(e.animation){e.animation.reset();e.retryAt={};}}
+void ImageProvider::tick(bool visible) {
+    std::lock_guard lock(mImpl->mutex);
+    mImpl->visible = visible;
+    auto const now = image_detail::Clock::now();
+    for (auto& [key, entry] : mImpl->entries) {
+        if (entry.animation && (!visible || (!entry.pending && now - entry.lastUse > std::chrono::seconds(3)))) {
+            entry.animation.reset();
+            entry.retryAt = {}; // Rehydrate from disk on the next visible request.
+        }
+    }
 }
 ImageProvider& ImageProvider::getInstance() { static ImageProvider provider; return provider; }
 
@@ -652,7 +663,12 @@ void ImageProvider::request(ImageReference const& reference, bool banner) {
     if (!mImpl->started || mImpl->stopping.load()) return;
     auto found = mImpl->entries.find(key);
     auto const now = image_detail::Clock::now();
-    for(auto& [k,e]:mImpl->entries)if(!e.pending && now-e.lastUse>std::chrono::seconds(15))e.animation.reset();
+    for (auto& [k, entry] : mImpl->entries) {
+        if (entry.animation && !entry.pending && now - entry.lastUse > std::chrono::seconds(15)) {
+            entry.animation.reset();
+            entry.retryAt = {};
+        }
+    }
     if (found == mImpl->entries.end()) {
         if (mImpl->entries.size() >= image_detail::MaxEntries) {
             auto victim = mImpl->entries.end();

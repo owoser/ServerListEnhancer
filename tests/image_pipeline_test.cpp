@@ -43,7 +43,7 @@ int main(){
  images.initialize("build/image-test-cache");images.start();images.request(ref);
  until=image_detail::Clock::now()+std::chrono::seconds(3);while(!images.get(ref)&&image_detail::Clock::now()<until)std::this_thread::sleep_for(std::chrono::milliseconds(2));assert(images.get(ref));images.stop();
  // Repeated visible/hidden cycles must release decoded GIFs, using disk only.
- std::ifstream gifStream("build/gif-fixtures/banner.gif",std::ios::binary);
+ std::ifstream gifStream("build/gif-fixtures/disposal.gif",std::ios::binary);
  image_detail::Bytes gifBytes{std::istreambuf_iterator<char>(gifStream),{}};assert(!gifBytes.empty());
  sle::ImageReference gifRef{"url","https://example.com/cached-banner.gif"};
  auto dir=images.builtinPath().parent_path();auto hash=image_detail::sha256(gifBytes);
@@ -60,6 +60,23 @@ int main(){
   while(gifMemoryBytes()&&image_detail::Clock::now()<end)std::this_thread::yield();
   assert(!images.animation(gifRef,true)&&gifMemoryBytes()==0);
  }
+ // A worker can finish after the user joins a world or closes the list.
+ // It must not apply the HTTP refresh delay to reloading discarded GIF frames.
+ sle::ImageReference hiddenRef{"url","https://example.com/hidden-banner.gif"};
+ auto hiddenKey=image_detail::sha256(image_detail::referenceKey(hiddenRef,true));
+ putText(dir/(hiddenKey+".gref"),hash);
+ putText(dir/(hiddenKey+".ref"),images.builtinPath(true).stem().string());
+ images.tick(false);images.request(hiddenRef,true);
+ until=image_detail::Clock::now()+std::chrono::seconds(3);
+ while(!images.get(hiddenRef,true)&&image_detail::Clock::now()<until)std::this_thread::yield();
+ assert(images.get(hiddenRef,true)); // Published only after the disk GIF decode.
+ while(gifMemoryBytes()&&image_detail::Clock::now()<until)std::this_thread::yield();
+ assert(!images.animation(hiddenRef,true)&&gifMemoryBytes()==0);
+ images.tick(true);images.request(hiddenRef,true);
+ until=image_detail::Clock::now()+std::chrono::seconds(3);
+ while(!images.animation(hiddenRef,true)&&image_detail::Clock::now()<until)std::this_thread::yield();
+ assert(images.animation(hiddenRef,true));
+ images.tick(false);
  images.stop();assert(gifMemoryBytes()==0);
  // A successfully cached static replacement invalidates the old GIF mapping.
  assert(image_detail::atomicWrite(dir/(keyHash+".gref"),std::span<unsigned char const>{}));
@@ -67,5 +84,5 @@ int main(){
  until=image_detail::Clock::now()+std::chrono::seconds(3);
  while(!images.get(gifRef,true)&&image_detail::Clock::now()<until)std::this_thread::yield();
  assert(images.get(gifRef,true));images.stop();assert(!images.animation(gifRef,true)&&gifMemoryBytes()==0);
- std::cout<<"WIC PNG/JPEG bounds, inline/URL safety, ten cached GIF open/close cycles return CPU memory to zero: PASS\n";
+ std::cout<<"WIC PNG/JPEG bounds, inline/URL safety, cached GIF reopen (including hidden worker completion), CPU memory returns to zero: PASS\n";
 }

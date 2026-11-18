@@ -22,7 +22,7 @@ struct HomeUiState {
     std::string screen;
 };
 
-// The companion DEX owns the list overlay view, and the JNI bridge intercepts only our home-entry URI.
+// The companion DEX owns the list overlay and observes pass-through home touches; JNI also retains our URI hook.
 // joinStatus 接收加入请求的结果：status > 0 表示已经发起深链，<= 0 表示失败并附提示文案。
 bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
                       std::function<void()> open,
@@ -41,13 +41,8 @@ bool registerHomeUiImage(std::string_view id, std::span<const unsigned char> rgb
                          int width, int height);
 // Width of text as drawn by the overlay (same Paint configuration); negative when JNI is unavailable.
 float measureHomeText(std::string_view text, float size);
-// 首页「服务器」按钮命中改由原生触摸回调判定：直接触发 Java 侧的打开入口。
-bool openHomeUiControl();
-// 当前是否停在菜单界面（不在世界/HUD、不在暂停菜单），供原生触摸回调识别首页。
-bool homeMenuVisible();
-// 全屏像素尺寸，用于把按钮矩形换算为比例坐标；取不到时返回 0。
-int homeScreenWidth();
-int homeScreenHeight();
+// Observe raw window-pixel events without consuming them; Java confirms the rendered home button on UP.
+void observeHomeUiTouch(float x, float y, int action, int pointerId);
 void closeHomeUi();
 
 } // namespace sle::android

@@ -13,14 +13,41 @@
         "operation": "insert_front",
         "value": [
           {
-            "sle_home_servers_button@common_buttons.light_text_button": {
-              "size": [
-                50,
-                24
-              ],
-              "$focus_id": "sle_home_servers_button",
-              "$button_text": "服务器",
-              "$pressed_button_name": "button.sle_home_entry"
+            "sle_home_entry": {
+              "type": "panel",
+              "size": [50, 24],
+              "controls": [
+                {
+                  "sle_home_servers_button@common_buttons.light_text_button": {
+                    "size": ["100%", "100%"],
+                    "$focus_id": "sle_home_servers_button",
+                    "$button_text": "服务器",
+                    "$pressed_button_name": "button.sle_home_entry"
+                  }
+                },
+                {
+                  "sle_entry_top_left": {
+                    "type": "image",
+                    "texture": "textures/ui/White",
+                    "size": [2, 2],
+                    "anchor_from": "top_left",
+                    "anchor_to": "top_left",
+                    "layer": 100,
+                    "color": [0.7764706, 0.7450981, 0.7921569, 1]
+                  }
+                },
+                {
+                  "sle_entry_bottom_right": {
+                    "type": "image",
+                    "texture": "textures/ui/White",
+                    "size": [2, 2],
+                    "anchor_from": "bottom_right",
+                    "anchor_to": "bottom_right",
+                    "layer": 100,
+                    "color": [0.7450981, 0.7921569, 0.7764706, 1]
+                  }
+                }
+              ]
             }
           },
           {

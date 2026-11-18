@@ -18,7 +18,9 @@ import android.net.Uri;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.PixelCopy;
 import android.view.SurfaceView;
+import android.view.ViewConfiguration;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -60,7 +62,10 @@ public final class HomeOverlay {
     private static boolean home;
     private static boolean queryFailureLogged;
     private static Runnable ticker;
-    private static boolean entryObservationLogged;
+    private static final EntryGesture ENTRY_GESTURE = new EntryGesture();
+    private static long entryTouchGeneration;
+    private static EntryTap pendingEntryTap;
+    private static boolean entryCopyPending;
     /** 连续失去窗口焦点超过该时长才确认列表应当关闭；截图、软键盘、系统弹窗只造成短时失焦。 */
     private static final long FOCUS_GRACE_MS = 1200L;
     /** 首次延迟确认的等待时间；仍在宽限期内时按剩余预算重复确认。 */
@@ -295,28 +300,6 @@ public final class HomeOverlay {
     /** 打开入口遇到瞬时 block（焦点/启动器菜单态）时的有界重试：6 次 × 120ms ≈ 700ms。 */
     private static final int HOME_OPEN_MAX_ATTEMPTS = 6;
     private static final long HOME_OPEN_RETRY_MS = 120L;
-
-    /** 全屏像素宽度（原生触摸回调把按钮矩形换算成比例坐标用）；覆盖层尚未创建时回退到屏幕尺寸。 */
-    public static int screenWidthPx() {
-        OverlayView current = view;
-        if (current != null) {
-            int width = current.surfaceWidth();
-            if (width > 0) return width;
-        }
-        Activity owner = activity;
-        return owner == null ? 0 : owner.getResources().getDisplayMetrics().widthPixels;
-    }
-
-    /** 全屏像素高度；覆盖层尚未创建时回退到屏幕尺寸。 */
-    public static int screenHeightPx() {
-        OverlayView current = view;
-        if (current != null) {
-            int height = current.surfaceHeight();
-            if (height > 0) return height;
-        }
-        Activity owner = activity;
-        return owner == null ? 0 : owner.getResources().getDisplayMetrics().heightPixels;
-    }
 
     private static long homeMenuCheckedAt;
     private static boolean homeMenuCached;
@@ -711,6 +694,9 @@ public final class HomeOverlay {
     }
 
     private static void disposeView() {
+        ENTRY_GESTURE.cancel();
+        ++entryTouchGeneration;
+        pendingEntryTap = null;
         home = false;
         activeSession = 0L;
         clearFocusGrace();
@@ -772,14 +758,162 @@ public final class HomeOverlay {
 
 
 
-    /**
-     * 首页标记色 #C6C6C3：r=g=198、b=195，与按钮灰 #C6C6C6 只差蓝通道 3，肉眼无法分辨；
-     * 自然画面里几乎不会出现 r 与 g 相等、蓝通道又恰好低 2~4 的像素。
-     */
+    /** The launcher passes window pixels before dispatching to Minecraft. Never consume that stream. */
+    public static void observeHomeTouch(final float x, final float y, final int action, final int pointerId) {
+        UI.post(() -> {
+            if ((action & 255) == MotionEvent.ACTION_DOWN) {
+                ++entryTouchGeneration;
+                pendingEntryTap = null;
+            }
+            if (closed || home || !refreshEnvironment() || isBlocked(activity) || !gameHomeMenu()) {
+                ENTRY_GESTURE.cancel();
+                ++entryTouchGeneration;
+                pendingEntryTap = null;
+                return;
+            }
+            EntryTap tap = ENTRY_GESTURE.event(action & 255, pointerId, x, y,
+                    ViewConfiguration.get(activity).getScaledTouchSlop());
+            if ((action & 255) == MotionEvent.ACTION_CANCEL || (action & 255) == MotionEvent.ACTION_POINTER_DOWN) {
+                ++entryTouchGeneration;
+                pendingEntryTap = null;
+            }
+            if (tap != null) {
+                pendingEntryTap = tap;
+                copyHomeEntry();
+            }
+        });
+    }
 
+    /** A fresh copy only after a completed tap; no polling, geometry cache or fixed screen ratio. */
+    private static void copyHomeEntry() {
+        if (entryCopyPending || pendingEntryTap == null || closed || home) return;
+        final EntryTap tap = pendingEntryTap;
+        pendingEntryTap = null;
+        final long touchToken = entryTouchGeneration, epoch = generation;
+        final Activity owner = activity;
+        final SurfaceView surface = owner == null ? null : findSurfaceView(owner);
+        if (surface == null || !surface.getHolder().getSurface().isValid()) return;
+        final int width = surface.getWidth(), height = surface.getHeight();
+        // Bound temporary Bitmap + pixel storage, including 4K screens.
+        if (width <= 0 || height <= 0 || (long) width * height > 8L * 1024 * 1024) return;
+        final int[] origin = new int[2];
+        surface.getLocationInWindow(origin);
+        final Bitmap shot;
+        try { shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); }
+        catch (Throwable failure) { Log.w(TAG, "Home entry copy allocation failed", failure); return; }
+        entryCopyPending = true;
+        try {
+            PixelCopy.request(surface, shot, result -> {
+                try {
+                    int[] currentOrigin = new int[2];
+                    surface.getLocationInWindow(currentOrigin);
+                    if (result != PixelCopy.SUCCESS || closed || home || epoch != generation
+                            || touchToken != entryTouchGeneration || owner != activity || isBlocked(owner)
+                            || width != surface.getWidth() || height != surface.getHeight()
+                            || origin[0] != currentOrigin[0] || origin[1] != currentOrigin[1]) return;
+                    int[] pixels = new int[width * height];
+                    shot.getPixels(pixels, 0, width, 0, 0, width, height);
+                    EntryBounds bounds = EntryBounds.find(pixels, width, height, tap, origin[0], origin[1]);
+                    if (bounds != null) {
+                        Log.i(TAG, "home entry rendered bounds=" + bounds.left + "," + bounds.top + ".."
+                                + bounds.right + "," + bounds.bottom + " surface=" + width + "x" + height);
+                        openFromHomeControl();
+                    }
+                } catch (Throwable failure) { Log.w(TAG, "Home entry copy failed", failure); }
+                finally {
+                    shot.recycle();
+                    entryCopyPending = false;
+                    if (pendingEntryTap != null) copyHomeEntry();
+                }
+            }, UI);
+        } catch (Throwable failure) {
+            entryCopyPending = false;
+            shot.recycle();
+            Log.w(TAG, "Home entry PixelCopy unavailable", failure);
+        }
+    }
 
+    static final class EntryTap {
+        final float downX, downY, upX, upY;
+        EntryTap(float dx, float dy, float ux, float uy) { downX=dx; downY=dy; upX=ux; upY=uy; }
+    }
 
+    /** Pure gesture state, also exercised by the host regression without Android runtime. */
+    static final class EntryGesture {
+        private int pointer = -1;
+        private float downX, downY;
+        private boolean dragged;
+        void cancel() { pointer = -1; dragged = false; }
+        EntryTap event(int action, int id, float x, float y, float slop) {
+            if (action == 0) { pointer=id; downX=x; downY=y; dragged=false; return null; }
+            if (action == 3 || action == 5 || action == 6) { cancel(); return null; }
+            if (pointer < 0 || id != pointer) return null;
+            float dx=x-downX, dy=y-downY;
+            if (!Float.isFinite(x) || !Float.isFinite(y) || dx*dx+dy*dy > slop*slop) dragged=true;
+            if (action != 1) return null;
+            EntryTap tap = dragged ? null : new EntryTap(downX,downY,x,y);
+            cancel();
+            return tap;
+        }
+    }
 
+    static final class EntryBounds {
+        // Two 2x2 logical-pixel corner blocks inside our own 50x24 button; see start_screen.json.
+        static final int TOP_COLOR=0xffc6beca, BOTTOM_COLOR=0xffbecac6;
+        final int left, top, right, bottom;
+        EntryBounds(int l,int t,int r,int b) { left=l; top=t; right=r; bottom=b; }
+        boolean contains(float x,float y) { return x>=left && x<right && y>=top && y<bottom; }
+        private static boolean color(int pixel,int expected) {
+            if ((pixel >>> 24) < 250) return false;
+            return Math.abs(((pixel>>16)&255)-((expected>>16)&255))<=2
+                    && Math.abs(((pixel>>8)&255)-((expected>>8)&255))<=2
+                    && Math.abs((pixel&255)-(expected&255))<=2;
+        }
+        private static ArrayList<EntryBounds> blocks(int[] pixels,int width,int height,int expected) {
+            ArrayList<EntryBounds> result = new ArrayList<>();
+            int[] queue = new int[4096];
+            for (int p=0;p<pixels.length;++p) {
+                if (!color(pixels[p],expected)) continue;
+                int head=0,tail=1,count=0,l=p%width,r=l,t=p/width,b=t;
+                boolean overflow=false;
+                queue[0]=p; pixels[p]=0;
+                while (head<tail) {
+                    int at=queue[head++],x=at%width,y=at/width; ++count;
+                    l=Math.min(l,x);r=Math.max(r,x);t=Math.min(t,y);b=Math.max(b,y);
+                    for (int direction=0;direction<4;++direction) {
+                        int next=direction==0?at-1:direction==1?at+1:direction==2?at-width:at+width;
+                        if ((direction==0&&x==0)||(direction==1&&x==width-1)||next<0||next>=pixels.length
+                                ||!color(pixels[next],expected)) continue;
+                        pixels[next]=0;
+                        if (tail<queue.length) queue[tail++]=next; else overflow=true;
+                    }
+                }
+                int w=r-l+1,h=b-t+1;
+                if (!overflow && w<=64 && h<=64 && Math.abs(w-h)<=1 && count>=w*h*.8f) {
+                    if (result.size()==64) return new ArrayList<>(); // Ambiguous scene: fail closed.
+                    result.add(new EntryBounds(l,t,r+1,b+1));
+                }
+            }
+            return result;
+        }
+        static EntryBounds find(int[] pixels,int width,int height,EntryTap tap,int originX,int originY) {
+            if (width<=0||height<=0||(long)width*height!=pixels.length) return null;
+            ArrayList<EntryBounds> upper=blocks(pixels,width,height,TOP_COLOR);
+            ArrayList<EntryBounds> lower=blocks(pixels,width,height,BOTTOM_COLOR);
+            EntryBounds found=null;
+            for (EntryBounds a:upper) for (EntryBounds b:lower) {
+                int w=b.right-a.left,h=b.bottom-a.top,side=a.right-a.left,otherSide=b.right-b.left;
+                // Pair solid corner blocks of matching scale and our button's aspect, never global extrema.
+                if (b.left<=a.right||b.top<=a.bottom||Math.abs(side-otherSide)>1||h<=0
+                        ||w<side*16||w>side*40||h<side*8||h>side*20||Math.abs(w-h*(50f/24f))>3f) continue;
+                EntryBounds candidate=new EntryBounds(a.left+originX,a.top+originY,b.right+originX,b.bottom+originY);
+                if (!candidate.contains(tap.downX,tap.downY)||!candidate.contains(tap.upX,tap.upY)) continue;
+                if (found!=null) return null;
+                found=candidate;
+            }
+            return found;
+        }
+    }
 
     /** API 30+ 才有精确的 IME inset；单独成类，旧系统不会解析这个类里缺失的类型。 */
     private static final class InsetsApi30 {

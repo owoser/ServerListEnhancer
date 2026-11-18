@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-17T06:57:11Z",
-  "updated_at": "2026-11-18T08:26:35Z",
+  "updated_at": "2026-11-18T09:43:19Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -35,15 +35,15 @@
     },
     "android/CMakeLists.txt": {
       "role": "index",
-      "sha256": "62f2df6924c0ba73278b66ceeebb2926fd630660d7323cef7c7d2554b644e8f2",
-      "size": 3719,
-      "normalized_sha256": "62f2df6924c0ba73278b66ceeebb2926fd630660d7323cef7c7d2554b644e8f2"
+      "sha256": "1b9b73e3f203454db1f02147ba083e6b301b93a0cfea4ece3cff7b5a78d4db8f",
+      "size": 3925,
+      "normalized_sha256": "1b9b73e3f203454db1f02147ba083e6b301b93a0cfea4ece3cff7b5a78d4db8f"
     },
     "android/java/cn/owoser/sle/HomeOverlay.java": {
       "role": "index",
-      "sha256": "8577423446cb0e48b132442e460f098ce3d525361a47398a534e516490f78822",
-      "size": 48947,
-      "normalized_sha256": "8577423446cb0e48b132442e460f098ce3d525361a47398a534e516490f78822"
+      "sha256": "1f79fd0f4ea1b6ade53d473d0c0aa5e8c161e2d2d4c3cded6640ea423906c35e",
+      "size": 56747,
+      "normalized_sha256": "1f79fd0f4ea1b6ade53d473d0c0aa5e8c161e2d2d4c3cded6640ea423906c35e"
     },
     "android/manifest.json.in": {
       "role": "index",
@@ -53,9 +53,9 @@
     },
     "android/resources/minecraft_resource_packs/sle_home/manifest.json": {
       "role": "index",
-      "sha256": "5148873cedbe62a9b71eef894dfd7f7d33fe4fa3308b610633143e48ea219314",
-      "size": 535,
-      "normalized_sha256": "5148873cedbe62a9b71eef894dfd7f7d33fe4fa3308b610633143e48ea219314"
+      "sha256": "b56ec97071c8f89537253ad3f56203298a9480ce1cf1de0fc5910b4804aaf5d4",
+      "size": 537,
+      "normalized_sha256": "b56ec97071c8f89537253ad3f56203298a9480ce1cf1de0fc5910b4804aaf5d4"
     },
     "android/resources/minecraft_resource_packs/sle_home/ui/play_screen.json": {
       "role": "index",
@@ -65,15 +65,15 @@
     },
     "android/resources/minecraft_resource_packs/sle_home/ui/start_screen.json": {
       "role": "index",
-      "sha256": "5fb634d2b5ced158f27f116eb26011a9b8ac8cb940e1dabc432cffbee3dd79cb",
-      "size": 967,
-      "normalized_sha256": "5fb634d2b5ced158f27f116eb26011a9b8ac8cb940e1dabc432cffbee3dd79cb"
+      "sha256": "56dbd76ad1673a6521f7f88ac91b4c26afa11ea3f89eb26bfcfaa2abadf5bbf7",
+      "size": 1996,
+      "normalized_sha256": "56dbd76ad1673a6521f7f88ac91b4c26afa11ea3f89eb26bfcfaa2abadf5bbf7"
     },
     "android/src/AndroidMod.cpp": {
       "role": "index",
-      "sha256": "c7835c9bfa1b84c48f332821ba2faab034125e869a7eb504d0d9fa11cef22cc4",
-      "size": 51601,
-      "normalized_sha256": "c7835c9bfa1b84c48f332821ba2faab034125e869a7eb504d0d9fa11cef22cc4"
+      "sha256": "866017ab1f4b0d5c611e8d0d81d86fd989bb4d62e503b14478c48f7a0de91f31",
+      "size": 51475,
+      "normalized_sha256": "866017ab1f4b0d5c611e8d0d81d86fd989bb4d62e503b14478c48f7a0de91f31"
     },
     "android/src/AndroidPlatform.cpp": {
       "role": "index",
@@ -113,15 +113,15 @@
     },
     "android/src/HomeUi.cpp": {
       "role": "index",
-      "sha256": "0e9e20580d2242258a608cb370545e8609fc5bc160e8fb1c8b16823ef854c062",
-      "size": 35120,
-      "normalized_sha256": "0e9e20580d2242258a608cb370545e8609fc5bc160e8fb1c8b16823ef854c062"
+      "sha256": "5499edd94f5c9215ad20750c5d02b0d42f024ef04333881c259ead43cc7eca8f",
+      "size": 33720,
+      "normalized_sha256": "5499edd94f5c9215ad20750c5d02b0d42f024ef04333881c259ead43cc7eca8f"
     },
     "android/src/HomeUi.h": {
       "role": "index",
-      "sha256": "b7f8dea7e158d64b98bf427df7fa8ffd6edea2187f40a1860451a4f3f596ebe7",
-      "size": 2288,
-      "normalized_sha256": "b7f8dea7e158d64b98bf427df7fa8ffd6edea2187f40a1860451a4f3f596ebe7"
+      "sha256": "abb66718df8ac035e57355c2cbc4e5d8dc9f3234cac115785f8a1435915e2bbb",
+      "size": 2058,
+      "normalized_sha256": "abb66718df8ac035e57355c2cbc4e5d8dc9f3234cac115785f8a1435915e2bbb"
     },
     "android/src/LatencyProbe.h": {
       "role": "index",
@@ -129,11 +129,17 @@
       "size": 6782,
       "normalized_sha256": "591d561bbd74f7dd0f1eb5de75e0959b44f9706b1f7167bee78590d01fe6149c"
     },
+    "android/src/TouchInteraction.h": {
+      "role": "index",
+      "sha256": "abe95e2eb677cfedfbecd1781eab2c278354b161a2d23175dbb32775f349a799",
+      "size": 1407,
+      "normalized_sha256": "abe95e2eb677cfedfbecd1781eab2c278354b161a2d23175dbb32775f349a799"
+    },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "d44572fd3e63db18baed02b175181a90370044715776bbdbfb5f79f55a2fdf99",
-      "size": 38055,
-      "normalized_sha256": "d44572fd3e63db18baed02b175181a90370044715776bbdbfb5f79f55a2fdf99"
+      "sha256": "129b920fbe353c808f79c4455597d1ba4258e40d052dc4de818f40f3286bfeea",
+      "size": 40490,
+      "normalized_sha256": "129b920fbe353c808f79c4455597d1ba4258e40d052dc4de818f40f3286bfeea"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -149,9 +155,9 @@
     },
     "docs/android.md": {
       "role": "index",
-      "sha256": "feb33ab2e4e508f173118cc98cb765d0d24d118a58670159239db91c55407d80",
-      "size": 10932,
-      "normalized_sha256": "feb33ab2e4e508f173118cc98cb765d0d24d118a58670159239db91c55407d80"
+      "sha256": "8ead9d24e8a3b3abced4706618235d32054608e8b3b772be9c057cc17b3b0682",
+      "size": 11561,
+      "normalized_sha256": "8ead9d24e8a3b3abced4706618235d32054608e8b3b772be9c057cc17b3b0682"
     },
     "docs/discovery-images.md": {
       "role": "index",
@@ -179,9 +185,9 @@
     },
     "docs/validation-ui-gif.md": {
       "role": "index",
-      "sha256": "b3e61517a7b46acdb51bc3b74e1bc0861315119c225611e37092d5cef02f99ff",
-      "size": 4291,
-      "normalized_sha256": "b3e61517a7b46acdb51bc3b74e1bc0861315119c225611e37092d5cef02f99ff"
+      "sha256": "6ab90ebf5ea8a8662ff5e490159da907a9ae066fe1ecb31f41983a5d81efa195",
+      "size": 5665,
+      "normalized_sha256": "6ab90ebf5ea8a8662ff5e490159da907a9ae066fe1ecb31f41983a5d81efa195"
     },
     "manifest-client.json": {
       "role": "index",
@@ -213,9 +219,9 @@
     },
     "scripts/package-android.ps1": {
       "role": "index",
-      "sha256": "90802dcd161f41932403c8dde42641aff69a558dd9fdd939d9edd4d415c4bbb6",
-      "size": 11950,
-      "normalized_sha256": "90802dcd161f41932403c8dde42641aff69a558dd9fdd939d9edd4d415c4bbb6"
+      "sha256": "fb46fb5986bee9ec73e8cca5ece75a61a3d605ae13ab8be05f073cf2520cacd2",
+      "size": 11979,
+      "normalized_sha256": "fb46fb5986bee9ec73e8cca5ece75a61a3d605ae13ab8be05f073cf2520cacd2"
     },
     "scripts/package-ui-gif.ps1": {
       "role": "index",
@@ -255,9 +261,9 @@
     },
     "src-client/ImageProvider.cpp": {
       "role": "index",
-      "sha256": "53c084a450659d5a09e871376163b8911f388831c0e8596ff65e3cdecf0ee4f3",
-      "size": 36367,
-      "normalized_sha256": "53c084a450659d5a09e871376163b8911f388831c0e8596ff65e3cdecf0ee4f3"
+      "sha256": "17daac086df63316003b0edcac4116c25dc2b7168371a2c77d924020cf1e9172",
+      "size": 37027,
+      "normalized_sha256": "17daac086df63316003b0edcac4116c25dc2b7168371a2c77d924020cf1e9172"
     },
     "src-client/ImageProvider.h": {
       "role": "index",
@@ -333,9 +339,9 @@
     },
     "src-client/ProbeOverlay.cpp": {
       "role": "index",
-      "sha256": "7be162ec0f6f849fe9d4dd8f3728a35eae96bebb11f53bf7bc93957c9783a632",
-      "size": 46678,
-      "normalized_sha256": "7be162ec0f6f849fe9d4dd8f3728a35eae96bebb11f53bf7bc93957c9783a632"
+      "sha256": "3c763e7d0f20d7bb3c3d8f344ef06dd5413bbddd4084f6ff8d1ffe4230e97fc5",
+      "size": 46876,
+      "normalized_sha256": "3c763e7d0f20d7bb3c3d8f344ef06dd5413bbddd4084f6ff8d1ffe4230e97fc5"
     },
     "src-client/ProbeOverlay.h": {
       "role": "index",
@@ -559,11 +565,23 @@
       "size": 808,
       "normalized_sha256": "587874b750950d33fbb10a128d94db0bc5022dfac90b6b301d9348d2e1c7326b"
     },
+    "tests/HomeEntryInteractionTest.java": {
+      "role": "observe",
+      "sha256": "4adc137b232d8db27e02f8ac77ba7b287578c9740752f603c5725abbf2086205",
+      "size": 4592,
+      "normalized_sha256": "4adc137b232d8db27e02f8ac77ba7b287578c9740752f603c5725abbf2086205"
+    },
     "tests/Inspect-ClientUi.ps1": {
       "role": "observe",
       "sha256": "970104f5cc5a554cf885f39ab46057fc040980bd733fad28be7b6822a292d44c",
       "size": 6398,
       "normalized_sha256": "970104f5cc5a554cf885f39ab46057fc040980bd733fad28be7b6822a292d44c"
+    },
+    "tests/Run-Android-Interaction.ps1": {
+      "role": "observe",
+      "sha256": "b8dd8429df0bab024433f0811e1a5c4d3bba9978ced459ec97f843668c2238d2",
+      "size": 2835,
+      "normalized_sha256": "b8dd8429df0bab024433f0811e1a5c4d3bba9978ced459ec97f843668c2238d2"
     },
     "tests/Run-Regression.cmd": {
       "role": "observe",
@@ -576,6 +594,12 @@
       "sha256": "499281534ae091d90aa32f5940c04190d3fcc05260746340312e40ebe656f8bf",
       "size": 2269,
       "normalized_sha256": "499281534ae091d90aa32f5940c04190d3fcc05260746340312e40ebe656f8bf"
+    },
+    "tests/android_touch_test.cpp": {
+      "role": "observe",
+      "sha256": "cf33d5cda38914613492cb356af5fa2ef1b53615b4f904ca39737363608918d0",
+      "size": 1704,
+      "normalized_sha256": "cf33d5cda38914613492cb356af5fa2ef1b53615b4f904ca39737363608918d0"
     },
     "tests/generate-gif-fixtures.cjs": {
       "role": "observe",
@@ -591,9 +615,9 @@
     },
     "tests/image_pipeline_test.cpp": {
       "role": "observe",
-      "sha256": "6de4eca5a0af5642a054a985b82c90db43c157a3ac0c08d91b52132522bf44fd",
-      "size": 6232,
-      "normalized_sha256": "6de4eca5a0af5642a054a985b82c90db43c157a3ac0c08d91b52132522bf44fd"
+      "sha256": "77a8f5a1fc1812d9dc0c6f592f3aa27a0691331c4a92d2d6934895e65a78ea66",
+      "size": 7402,
+      "normalized_sha256": "77a8f5a1fc1812d9dc0c6f592f3aa27a0691331c4a92d2d6934895e65a78ea66"
     },
     "tests/input_model_test.cpp": {
       "role": "observe",

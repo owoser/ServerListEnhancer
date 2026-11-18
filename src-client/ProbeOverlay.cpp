@@ -609,7 +609,6 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     }
     if (!allowed) {endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();return;}
     beginImageFrame();
-    {std::lock_guard lock(gMutex);ImageProvider::getInstance().tick(gOpen&&gPage==Page::List);}
     FontHandle handle = ci->getFontHandle();
     auto font=handle.mDefaultFont;
     if (!font) { gVisible.store(false); return; }
@@ -655,6 +654,10 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     gFade = gFade < target ? std::min(target, gFade + step) : std::max(target, gFade - step);
     float const eased = gFade * gFade * (3.0f - 2.0f * gFade);
 
+    // Publish visibility once, including the fading frames. Releasing decoded
+    // GIFs before drawing and marking them visible again afterwards races workers.
+    bool const listVisibleNow = (open || gFade > 0.002f) && page == Page::List;
+    ImageProvider::getInstance().tick(listVisibleNow);
     if (open || gFade > 0.002f) {
         // 关闭过程中仍按剩余透明度重绘一帧帧，直到完全透明。
         gUiAlpha = eased;
@@ -673,10 +676,8 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     drawToast(ctx, *font, sw, sh);
     ctx.flushText(0.0f, std::nullopt);
     gMeasureContext=nullptr;gMeasureFont=nullptr;
-    // 淡出期间仍属于同一段可见时间，别在过渡帧里把 GIF 贴图拆掉再重建。
-    bool const listVisibleNow = (open || gFade > 0.002f) && page == Page::List;
+    // CPU frames and GPU textures share the same visibility through the fade.
     endImageFrame(listVisibleNow);
-    ImageProvider::getInstance().tick(listVisibleNow);
     static bool wasListVisible{};
     bool const listVisible=open&&page==Page::List;
     if(wasListVisible&&!listVisible)probeLogger().info("[GIF] list hidden, decodedBytes={}",gifMemoryBytes());
@@ -819,6 +820,8 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         guiScale = 1.0f;
     }
 
+    // MouseInputEvent coordinates can be relative while the menu uses absolute
+    // client pixels. Match the cursor source used to draw hover feedback.
     float uiX = static_cast<float>(haveCursor ? cursorX : event.x()) / guiScale;
     float uiY = static_cast<float>(haveCursor ? cursorY : event.y()) / guiScale;
 

@@ -6,6 +6,7 @@
 #include "LatencyProbe.h"
 #include "ServerStore.h"
 #include "TextEdit.h"
+#include "TouchInteraction.h"
 #include "common/BuiltinImages.h"
 #include "common/Endpoint.h"
 #include <pl/Mod.hpp>
@@ -122,7 +123,7 @@ std::string codepoint(unsigned n) {
 }
 }
 class AndroidMod {
-    struct Hit {float x,y,w,h;int action;std::string id;bool contains(float a,float b)const{return a>=x&&b>=y&&a<x+w&&b<y+h;}};
+    using Hit = TouchTarget;
     struct Task {SavedServer server;std::uint64_t generation;bool imagesOnly{false};};
     std::mutex mutex;
     std::condition_variable changed;
@@ -142,7 +143,11 @@ class AndroidMod {
     bool logoReady{},bannerReady{};
     int logoWidth{64},logoHeight{64},bannerWidth{960},bannerHeight{320};
     float scale{1},viewWidth{800},viewHeight{480};
-    int page{},focus{},pressed{-1};
+    int page{},focus{};
+    TouchPress press;
+    std::mutex renderMutex;
+    std::condition_variable renderChanged;
+    bool repaintRequested{};
     std::vector<Hit> hits;
     std::string selected,editId,name,address,notice;
     client::TextEdit nameEdit,addressEdit;
@@ -371,32 +376,17 @@ class AndroidMod {
         {std::lock_guard guard(joinMutex);pending=joinNoticePending;if(pending){notice=std::move(joinNotice);joinNoticePending=false;}}
         (void)pending;
     }
-    // 首页「服务器」按钮在屏幕上的比例矩形（2400x1080 实测 x 1851..2052、y 46..135）。
-    static constexpr float HomeButtonX0{0.771f};
-    static constexpr float HomeButtonX1{0.855f};
-    static constexpr float HomeButtonY0{0.043f};
-    static constexpr float HomeButtonY1{0.125f};
-
-    // 原生触摸回调：只在菜单界面且列表未打开时命中「服务器」按钮，命中后吞掉这次触摸。
-    bool homeTouch(const pl::input::TouchEvent &event) {
-        if(!active||!moduleEnabled)return false;
-        if(event.action!=0)return false;
-        __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","raw touch down x=%.0f y=%.0f",static_cast<double>(event.x),static_cast<double>(event.y));
-        {std::lock_guard lock(mutex);if(open)return false;}
-        bool menu=sle::android::homeMenuVisible();
-        int w0=sle::android::homeScreenWidth();
-        int h0=sle::android::homeScreenHeight();
-        __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","home touch check menu=%d size=%dx%d",menu?1:0,w0,h0);
-        if(!menu)return false;
-        int width=sle::android::homeScreenWidth();
-        int height=sle::android::homeScreenHeight();
-        if(width<=0||height<=0)return false;
-        if(event.x<width*HomeButtonX0||event.x>width*HomeButtonX1
-            ||event.y<height*HomeButtonY0||event.y>height*HomeButtonY1)return false;
-        if(!sle::android::openHomeUiControl())return false;
-        __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","home entry touch x=%.0f y=%.0f width=%d height=%d",
-            static_cast<double>(event.x),static_cast<double>(event.y),width,height);
-        return true;
+    // Launcher 1.6.0 在 callback=true 时跳过游戏分发。首页必须放行完整手势，
+    // 原版 light_text_button 才能显示按压绿色；Java 在 UP 后用实际渲染边界确认入口。
+    bool homeTouch(const pl::input::TouchEvent& event) {
+        if(!active)return false;
+        {std::lock_guard lock(mutex);if(!moduleEnabled||open)return false;}
+        observeHomeUiTouch(event.x,event.y,event.action,event.pointerId);
+        return false;
+    }
+    void requestRepaint() {
+        {std::lock_guard lock(renderMutex);repaintRequested=true;}
+        renderChanged.notify_one();
     }
 
     bool homeAllowed() const {
@@ -405,7 +395,7 @@ class AndroidMod {
     void dismiss() {
         // 关闭列表即作废在途的加入请求，迟到的 DNS 结果不会再拉起游戏。
         if(joining.exchange(false))cancelServerJoin();
-        bool wasOpen=open;open=form=confirm=false;pressed=-1;hits.clear();
+        bool wasOpen=open;open=form=confirm=false;press.cancel();hits.clear();
         // 关闭时释放逐帧 Bitmap，重新打开后由探测流程重新注册。
         if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimations();clearRowImages();latencyProbe.pause();pl::input::hideKeyboard();}
     }
@@ -413,7 +403,7 @@ class AndroidMod {
         if(!active)return;auto state=homeUiState();
         {std::lock_guard lock(mutex);
         if(!moduleEnabled||!state.ready||!state.home||state.blocked){submitHomeUiFrame(0,{},state.session);return;}
-        open=true;form=confirm=false;pressed=-1;hits.clear();clearSelection();autoRefreshPending=autoRefresh;}
+        open=true;form=confirm=false;press.cancel();hits.clear();clearSelection();autoRefreshPending=autoRefresh;}
         // 首次打开或缓存过期时自动补齐资料与图片；行点击仍然只做选中，不发查询。
     }
 
@@ -585,14 +575,16 @@ class AndroidMod {
     bool touch(const pl::input::TouchEvent& event) {
         if(!active||!homeAllowed())return false;std::lock_guard lock(mutex);if(!moduleEnabled||!open)return false;
         auto x=event.x/scale,y=event.y/scale;int action=event.action&255;
-        if(action==0){pressed=-1;for(std::size_t i=0;i<hits.size();++i)if(hits[i].contains(x,y)){pressed=static_cast<int>(i);break;}}
-        if(action==1){int index=pressed;pressed=-1;if(index>=0&&static_cast<std::size_t>(index)<hits.size()&&hits[index].contains(x,y)){auto hit=hits[index];act(hit);}}
-        if(action==3)pressed=-1;return true;
+        if(action==0){press.cancel();for(const auto& hit:hits)if(hit.contains(x,y)){press.begin(hit);break;}}
+        else if(action==2)press.move(x,y);
+        else if(action==1){if(auto hit=press.release(hits,x,y))act(*hit);}
+        else if(action==3||action==5||action==6)press.cancel();
+        requestRepaint();return true;
     }
     bool key(const pl::input::KeyEvent& event) {
         if(!active||!homeAllowed())return false;std::lock_guard lock(mutex);if(!moduleEnabled||!open)return false;
         if(!event.isKeyDown)return true;
-        if(event.keyCode==4){if(form){form=confirm=false;pressed=-1;pl::input::hideKeyboard();}else dismiss();return true;}
+        if(event.keyCode==4){if(form){form=confirm=false;press.cancel();pl::input::hideKeyboard();}else dismiss();return true;}
         if(!form||confirm)return true;
         auto& text=focus?address:name;auto& editor=focus?addressEdit:nameEdit;
         if(event.keyCode==67)editor.backspace(text);
@@ -620,7 +612,11 @@ class AndroidMod {
                 scale=std::max(.5f,std::min(display.width/800.f,display.height/480.f));viewWidth=display.width/scale;viewHeight=display.height/scale;
                 auto rect=[&](float x,float y,float w,float h,std::uint32_t color){commands.push_back({.type=pl::modmenu::DrawCommandType::RectFilled,.x=x*scale,.y=y*scale,.w=w*scale,.h=h*scale,.color=color});};
                 auto text=[&](float x,float y,std::string value,float size=16,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=x*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
-                auto button=[&](float x,float y,float w,std::string label,int action,std::string id=std::string{}){const float labelWidth=textWidth(label,16);rect(x,y,w,36,0xff424242);text(x+(w-labelWidth)/2,y+8,std::move(label),16);hits.push_back({x,y,w,36,action,std::move(id)});};
+                auto button=[&](float x,float y,float w,std::string label,int action,std::string id=std::string{}){
+                    Hit hit{x,y,w,36,action,std::move(id)};const bool down=press.isPressed(hit);const float offset=down?1.f:0.f;
+                    rect(x,y,w,36,down?0xff3c8527:0xff424242);rect(x,y,w,down?1:2,down?0xff285c1b:0xff686868);
+                    rect(x,y+34,w,2,down?0xff285c1b:0xff252525);
+                    const float labelWidth=textWidth(label,16);text(x+(w-labelWidth)/2,y+8+offset,std::move(label),16);hits.push_back(std::move(hit));};
                 auto image=[&](const char* id,float x,float y,float w,float h,int iw,int ih){float r=std::min(w/iw,h/ih);commands.push_back({.type=pl::modmenu::DrawCommandType::Image,.x=(x+(w-iw*r)/2)*scale,.y=(y+(h-ih*r)/2)*scale,.w=iw*r*scale,.h=ih*r*scale,.color=0xffffffff,.imageId=id});};
                 // 右侧信息列（玩家数/UDP 时延/版本）右对齐：Home 覆盖层只有左对齐，先估算宽度再反推起点。
                 auto rightText=[&](float rightEdge,float y,std::string value,float size,std::uint32_t color=0xffffffff){commands.push_back({.type=pl::modmenu::DrawCommandType::Text,.x=(rightEdge-textWidth(value,size))*scale,.y=(y+size)*scale,.color=color,.size=size*scale,.text=std::move(value)});};
@@ -648,7 +644,8 @@ class AndroidMod {
                     if(servers.empty())text(left+20,100,"还没有服务器，点击右上角“添加”开始。",19);
                     for(int row=0;row<rows;++row){auto index=page*rows+row;if(index>=static_cast<int>(servers.size()))break;const auto& s=servers[index];float y=65+row*64.f;
                         const float editX=right-35,columnRight=editX-8;
-                        rect(left,y,editX-left,58,s.id==selected?0xff44633b:0xe03a403c);
+                        const Hit rowHit{left,y,editX-left,58,6,s.id};
+                        rect(left,y,editX-left,58,press.isPressed(rowHit)?0xff3c8527:s.id==selected?0xff44633b:0xe03a403c);
                         // 行图标：该行 GIF 当前帧 → 该行静态首帧 → 选中项动画 → 选中项静图 → 默认图标。
                         const std::int64_t rowNow=steadyMillis();
                         std::string rowFrame;int rowFrameW=0,rowFrameH=0;
@@ -676,10 +673,10 @@ class AndroidMod {
                         rightText(columnRight,y+22,fit(ping,12),13,latencyBand==1?0xff81e65e:latencyBand==2?0xffffde56:latencyBand==3?0xffff7f73:0xffcacaca);
                         if(status!=statuses.end()&&!status->second.version.empty())rightText(columnRight,y+40,fit(status->second.version,16),13,0xffe1e1e1);
                         // 行尾铅笔按钮：76 灰底 + 1px 分隔线 + 8 个 3x3 像素斜线；点击直接编辑这一行。
-                        rect(editX,y,35,58,0xff4c4c4c);rect(editX,y,1,58,0xff787878);
-                        for(int pen=0;pen<8;++pen)rect(editX+12+pen,y+34-pen,3,3,0xffeeeeee);
-                        hits.push_back({editX,y,35,58,14,s.id});
-                        hits.push_back({left,y,editX-left,58,6,s.id});
+                        const Hit editHit{editX,y,35,58,14,s.id};const bool editDown=press.isPressed(editHit);
+                        rect(editX,y,35,58,editDown?0xff3c8527:0xff4c4c4c);rect(editX,y,1,58,editDown?0xff285c1b:0xff787878);
+                        for(int pen=0;pen<8;++pen)rect(editX+12+pen,y+34-pen+(editDown?1:0),3,3,0xffeeeeee);
+                        hits.push_back(editHit);hits.push_back(rowHit);
                     }
                     // 加入按钮：列表中部、详情图上方居中；没有可用选中项时变暗且不注册点击区。
                     const bool joinable=joinTarget().has_value();
@@ -687,11 +684,13 @@ class AndroidMod {
                     const bool joinActive=joinable&&!joinBusy;
                     const float joinWidth=200,joinHeight=36;
                     const float joinX=(viewWidth-joinWidth)/2,joinY=viewHeight-170-42;
-                    rect(joinX,joinY,joinWidth,joinHeight,joinActive?0xff3fa34a:0xff2c322c);
-                    rect(joinX,joinY,joinWidth,1,joinActive?0xff7fd486:0xff3a423a);
+                    const Hit joinHit{joinX,joinY,joinWidth,joinHeight,15,{}};const bool joinDown=joinActive&&press.isPressed(joinHit);
+                    rect(joinX,joinY,joinWidth,joinHeight,joinDown?0xff2a6b22:joinActive?0xff3fa34a:0xff2c322c);
+                    rect(joinX,joinY,joinWidth,1,joinDown?0xff204b19:joinActive?0xff7fd486:0xff3a423a);
+                    rect(joinX,joinY+34,joinWidth,2,joinActive?0xff204b19:0xff252a25);
                     const std::string joinLabel=joinBusy?"正在加入…":"加入游戏";
-                    text(joinX+(joinWidth-textWidth(joinLabel,16))/2,joinY+10,joinLabel,16,joinActive?0xffffffff:0xff8f968f);
-                    if(joinActive)hits.push_back({joinX,joinY,joinWidth,joinHeight,15,{}});
+                    text(joinX+(joinWidth-textWidth(joinLabel,16))/2,joinY+10+(joinDown?1:0),joinLabel,16,joinActive?0xffffffff:0xff8f968f);
+                    if(joinActive)hits.push_back(joinHit);
                     float dy=viewHeight-170;rect(left,dy,right-left,110,0xd0252c27);
                     if(auto s=ServerStore::getInstance().get(selected)){
                         std::string bannerId=animationId(bannerAnimation);
@@ -706,7 +705,9 @@ class AndroidMod {
                 }
             }}
             if(mode==2||lastMode!=0||display.session!=0)submitHomeUiFrame(mode,commands,display.session);
-            lastMode=mode;std::this_thread::sleep_for(50ms);
+            lastMode=mode;
+            std::unique_lock renderLock(renderMutex);
+            renderChanged.wait_for(renderLock,50ms,[&]{return repaintRequested||!active.load();});repaintRequested=false;
         }
         submitHomeUiFrame(0,{},0);
     }
@@ -748,8 +749,8 @@ public:
         __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Enabled home-screen server entry and two workers");return true;
     }
     bool disable(){
-        active=false;if(joining.exchange(false))cancelServerJoin();changed.notify_all();if(renderer.joinable())renderer.join();for(auto& t:workers)if(t.joinable())t.join();workers.clear();
-        {std::lock_guard lock(mutex);open=form=false;hits.clear();tasks.clear();rowAnimations.clear();rowImages.clear();rowImageBytes=0;}
+        active=false;if(joining.exchange(false))cancelServerJoin();changed.notify_all();requestRepaint();if(renderer.joinable())renderer.join();for(auto& t:workers)if(t.joinable())t.join();workers.clear();
+        {std::lock_guard lock(mutex);open=form=false;press.cancel();hits.clear();tasks.clear();rowAnimations.clear();rowImages.clear();rowImageBytes=0;}
         latencyProbe.stop();
         pl::input::hideKeyboard();closeHomeUi();pl::modmenu::unregisterModule(Module);return ServerStore::getInstance().save();
     }
