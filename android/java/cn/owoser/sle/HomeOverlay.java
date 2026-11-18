@@ -718,6 +718,12 @@ public final class HomeOverlay {
     }
 
     private static void probeHomeEntry(float x, float y) {
+        // 抽屉或弹层刚关掉时，按钮标记这一帧可能还没画出来；落空就短时间内补采样，
+        // 免得用户必须点第二下才打开列表。
+        probeHomeEntry(x, y, 2, false);
+    }
+
+    private static void probeHomeEntry(final float x, final float y, final int retriesLeft, final boolean bypassThrottle) {
         if (view == null || entryProbeInFlight || closed) {
             Log.i(TAG, "entry probe skipped: view=" + (view != null) + " inFlight=" + entryProbeInFlight + " closed=" + closed);
             return;
@@ -731,7 +737,7 @@ public final class HomeOverlay {
         }
         if (x < width * 0.5f || y > height * 0.22f) return;
         long now = SystemClock.uptimeMillis();
-        if (now - lastEntryProbeAt < 600L) {
+        if (!bypassThrottle && now - lastEntryProbeAt < 600L) {
             Log.i(TAG, "entry probe throttled: " + (now - lastEntryProbeAt) + "ms since last");
             return;
         }
@@ -757,6 +763,9 @@ public final class HomeOverlay {
                         shot.recycle();
                         if (found) {
                             openFromHomeControl();
+                        } else if (result == PixelCopy.SUCCESS && retriesLeft > 0) {
+                            Log.i(TAG, "entry probe miss, retrying (" + retriesLeft + ")");
+                            UI.postDelayed(() -> probeHomeEntry(x, y, retriesLeft - 1, true), 120L);
                         } else if (result != PixelCopy.SUCCESS) {
                             Log.w(TAG, "home entry probe failed: " + result);
                         }
