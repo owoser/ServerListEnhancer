@@ -124,6 +124,7 @@ xmake -P . -y
 ```
 
 - 需要 xmake、Visual Studio C++ 工具链、clang-cl。默认 LL 26.60.8；客户端构建拒绝更旧的 SDK，服务端可独立指定版本。
+- 客户端链接若报 `LNK2019 ... World::ServerWorldJoiner::joinExternalServer`，先查本地包仓库是否过期：`git -C %LOCALAPPDATA%\.xmake\repositories\levimc-repo pull --ff-only`，再删除项目 `.xmake` 与 `build\.prelink` 后重新 `xmake f` / `xmake`，让依赖重新解析。LL 26.60.8 的 `versions/26_60_8.lua` 要求 `bedrockdata v26.60.5-client.16`（含该符号）并配套 `prelink v0.8.8`；陈旧缓存会落到 `client.15`/旧 prelink，生成的存根缺少该导入。
 - 客户端最低运行版本 LL26.60.8；客户端与服务端 DLL **不可混用**，最低版本门禁不代表未来游戏 ABI 已验证。
 - Android 打包：`scripts/package-android.ps1 -SdkRoot <SDK> -NdkHome <SDK>/ndk/28.2.13676358`。要求 CMake ≥3.24、Ninja、Git、JDK 17、NDK **28.2.13676358**（NDK 30 产出的库会因启动器 libc++ 缺 `__hash_memory` 实机加载失败），默认仅 arm64-v8a / API 28+，产物在 `dist/android/`。Preloader SDK 锁定 LeviLauncher Android v1.6.0 提交 `5d108da350ce3e7f13f51415f81e65344ecd5d14`，模板的旧 0.2.2 结构体不兼容。
 
