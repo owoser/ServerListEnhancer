@@ -492,6 +492,14 @@ void drawToast(MinecraftUIRenderContext& ctx, Font& font, float sw, float sh) {
 
 // Key snapshots are updated even for suppressed chords: Alt+A cannot leak A later.
 std::array<bool,256> gKeyPrev{};
+
+// ESC 在覆盖层里只用于返回：吞掉原版按键，避免同时弹出暂停/退出对话框。
+std::atomic<long long> gEscSuppressMs{0};
+
+long long steadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
+
 std::string clipboardText(){
  std::string out;if(!OpenClipboard(nullptr))return out;
  if(HANDLE data=GetClipboardData(CF_UNICODETEXT))if(auto w=static_cast<wchar_t*>(GlobalLock(data))){
@@ -522,7 +530,7 @@ void pollKeyboard(){
  if(!foreground||resumed)return;
  std::lock_guard lock(gMutex);if(!gOpen)return;
  if(down[VK_MENU]||down[VK_LWIN]||down[VK_RWIN]){gKeyRepeatAt={};return;}
- if(edge[VK_ESCAPE]){if(gPage==Page::List)gOpen=false;else gPage=Page::List;return;}
+ if(edge[VK_ESCAPE]){gEscSuppressMs.store(steadyMs()+250);if(gPage==Page::List)gOpen=false;else gPage=Page::List;return;}
  if(gPage!=Page::Form)return;
  bool ctrl=down[VK_CONTROL],shift=down[VK_SHIFT];
  if(edge[VK_TAB]){gFormActive=(gFormActive+1)%2;gCaretAt=Clock::now();return;}
@@ -1031,6 +1039,20 @@ void registerProbeOverlay() {
             bus.emplaceListener<ll::event::input::MouseInputEvent>([](ll::event::input::MouseInputEvent& event) {
                 onMouse(event);
             });
+    }
+    if (!gKeyListener) {
+        gKeyListener = bus.emplaceListener<ll::event::input::KeyInputEvent>(
+            [](ll::event::input::KeyInputEvent& event) {
+                if (!event.isDown() || event.keyCode() != VK_ESCAPE) return;
+                bool openNow = false;
+                {
+                    std::lock_guard lock(gMutex);
+                    openNow = gOpen;
+                }
+                // 覆盖层打开，或刚被这次 ESC 关闭（淡出中）时，都不让原版看到该键。
+                if (openNow || steadyMs() < gEscSuppressMs.load()) event.cancel();
+            }
+        );
     }
 
 }
