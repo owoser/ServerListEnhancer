@@ -101,7 +101,7 @@ GifAnimation.h[KU8M]: F:GIF 逐帧解码器：按 Windows 规则解析帧数、�
 LatencyProbe.h[KN8S]: F:Android UDP 时延探测：2 线程队列、3 次尝试各 1500ms 超时取中位数，结果缓存 15 秒 | R:code:android/src/AndroidMod.cpp,code:src-client/LatencyProbe.cpp,code:src/common/UdpProbeProtocol.h | A:request 入队、get 读结果、pause 清队、echo 与 NetherNet 两种报文校验 | S:渲染线程只读结果不阻塞；同 key 15 秒内不重复，条目上限 512
 
 ===E:/code/LL3/Plugins/ServerListEnhancer/android/java/cn/owoser/sle/===
-HomeOverlay.java[IU9L]: F:模组自有 Android 覆盖层：透明视图接收触摸、绘制列表与加入按钮、180ms 淡入淡出、首页入口命中与加入深链 | R:code:android/src/HomeUi.cpp,code:android/src/AndroidMod.cpp,code:android/resources/minecraft_resource_packs/sle_home/ui/start_screen.json | A:install 与 frame 与 nativeTouch 与 measureText 与 entryMarkerHit；startFade/advanceFade 按 uptimeMillis 推进 smoothstep，关闭先淡出再 GONE；joinServer 走深链 | S:触点必须夹在左右标记之间才开列表；淡出期间逻辑已关闭且不再接收触摸
+HomeOverlay.java[IU9L]: F:模组自有 Android 覆盖层：透明视图接收触摸、绘制列表与加入按钮、180ms 淡入淡出、首页入口双标记命中与加入深链 | R:code:android/src/HomeUi.cpp,code:android/src/AndroidMod.cpp,code:android/resources/minecraft_resource_packs/sle_home/ui/start_screen.json | A:install 与 frame 与 nativeTouch 与 measureText/entryMarkerHit 按最近一对左右标记配对（gap 不超过 260）判定触点/openFromHomeControl 在 isBlocked 时按 120ms 重试最多 6 次/startFade 与 advanceFade 走 smoothstep，关闭先淡出再 GONE | S:触点必须夹在同一对标记之间才开列表，禁止在全图取最左最右标记；淡出期间逻辑已关闭且不收触摸；每次会话最多一次打开尝试链
 
 ===E:/code/LL3/Plugins/ServerListEnhancer/android/resources/minecraft_resource_packs/sle_home/===
 manifest.json[FV4T]: F:首页入口与界面覆盖的资源包清单，声明 resources 模块与 UUID | R:code:android/resources/minecraft_resource_packs/sle_home/ui/start_screen.json,code:scripts/package-android.ps1 | A:header uuid db04a445-6d47-465c-821c-9370024fcb4e、module uuid 15f9f729-b660-4b11-80ef-57de719f1ad1、min_engine_version 1.26.0、version 1.0.8 | S:内容变化必须递增 version，否则启动器按版号判定不会重新同步该资源包
