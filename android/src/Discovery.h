@@ -13,6 +13,7 @@ struct Status {
     int players{-1}, capacity{-1};
     std::optional<DiscoveryVisual> visual;
     bool pending{};
+    // 最近一次查询完成时间，仅用于诊断与后续策略，不参与界面绘制。
     std::chrono::steady_clock::time_point refreshedAt{};
 };
 inline void bindEndpoint(Status& status,std::string endpoint) {

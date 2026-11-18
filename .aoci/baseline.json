@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-17T06:57:11Z",
-  "updated_at": "2026-11-18T02:30:32Z",
+  "updated_at": "2026-11-18T02:35:13Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -65,9 +65,9 @@
     },
     "android/src/AndroidMod.cpp": {
       "role": "index",
-      "sha256": "bc1285b4601b6eb0f03cdaf08982318abe946b7d25c737d9e71f1d5b44fd9354",
-      "size": 46019,
-      "normalized_sha256": "bc1285b4601b6eb0f03cdaf08982318abe946b7d25c737d9e71f1d5b44fd9354"
+      "sha256": "af2fb1ccb742682dbc389b816eecc932458f78936fcbc5e9cb4e2dca9ca202fa",
+      "size": 45793,
+      "normalized_sha256": "af2fb1ccb742682dbc389b816eecc932458f78936fcbc5e9cb4e2dca9ca202fa"
     },
     "android/src/AndroidPlatform.cpp": {
       "role": "index",
@@ -89,9 +89,9 @@
     },
     "android/src/Discovery.h": {
       "role": "index",
-      "sha256": "98b87a1bea5b0e4d53048f9e53837bcf7ad2a59b19acfb0acfad55d89210e691",
-      "size": 2641,
-      "normalized_sha256": "98b87a1bea5b0e4d53048f9e53837bcf7ad2a59b19acfb0acfad55d89210e691"
+      "sha256": "2dbf71a3c0d0ab9f1128e00a30ec3864a4b05e0288e9c2e8c2ae28b3583bc5c6",
+      "size": 2739,
+      "normalized_sha256": "2dbf71a3c0d0ab9f1128e00a30ec3864a4b05e0288e9c2e8c2ae28b3583bc5c6"
     },
     "android/src/GenerateConfig.cpp": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "1b7b581ec9567ebbad606f218d82d3c0770ebfa3bad570968ce59341a40add80",
-      "size": 34038,
-      "normalized_sha256": "1b7b581ec9567ebbad606f218d82d3c0770ebfa3bad570968ce59341a40add80"
+      "sha256": "6613be45f0f6e63f6be26d47ef177316739e52e74a398ba68a496bf4a67d621e",
+      "size": 34128,
+      "normalized_sha256": "6613be45f0f6e63f6be26d47ef177316739e52e74a398ba68a496bf4a67d621e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -143,9 +143,9 @@
     },
     "docs/android.md": {
       "role": "index",
-      "sha256": "8a98facaa72020203fcefc689d8f3a8314d143ef9584b06fcb01491aed2680b0",
-      "size": 9688,
-      "normalized_sha256": "8a98facaa72020203fcefc689d8f3a8314d143ef9584b06fcb01491aed2680b0"
+      "sha256": "4e14154a77d6dd8fb6fa529d0f1649b4222e2c7e69ff4cbd1785e0596adf5f74",
+      "size": 9648,
+      "normalized_sha256": "4e14154a77d6dd8fb6fa529d0f1649b4222e2c7e69ff4cbd1785e0596adf5f74"
     },
     "docs/discovery-images.md": {
       "role": "index",

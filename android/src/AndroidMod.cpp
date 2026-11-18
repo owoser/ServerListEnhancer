@@ -356,7 +356,7 @@ class AndroidMod {
         if(!active)return;auto state=homeUiState();
         {std::lock_guard lock(mutex);
         if(!moduleEnabled||!state.ready||!state.home||state.blocked){submitHomeUiFrame(0,{},state.session);return;}
-        open=true;form=confirm=false;pressed=-1;hits.clear();autoRefreshPending=true;}
+        open=true;form=confirm=false;pressed=-1;hits.clear();autoRefreshPending=autoRefresh;}
         // 首次打开或缓存过期时自动补齐资料与图片；行点击仍然只做选中，不发查询。
     }
 
@@ -370,14 +370,12 @@ class AndroidMod {
         changed.notify_one();
     }
     void refresh() {for(const auto& s:ServerStore::getInstance().list())enqueue(s);}
-    // 打开列表时自动补齐：只查没有结果、失败过或超过 60 秒未更新的服务器，正在查询的跳过。
-    void refreshStale() {
-        const auto now=std::chrono::steady_clock::now();
+    // 打开列表即刷新全部服务器：正在查询的（pending）跳过，避免重复入队。
+    void refreshOnOpen() {
         int queued=0;
         for(const auto& s:ServerStore::getInstance().list()){
             auto it=statuses.find(s.id);
             if(it!=statuses.end()&&it->second.pending)continue;
-            if(it!=statuses.end()&&it->second.refreshedAt.time_since_epoch().count()!=0&&now-it->second.refreshedAt<std::chrono::seconds(60))continue;
             enqueue(s);++queued;
         }
         if(queued)__android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Opening list: queued %d server(s) for refresh",queued);
@@ -547,7 +545,7 @@ class AndroidMod {
             const bool allowed=display.ready&&display.home&&!display.blocked&&moduleEnabled&&display.width>0&&display.height>0;
             if(!allowed)dismiss();
             else if(open)mode=2;
-            if(mode==2&&autoRefreshPending){autoRefreshPending=false;refreshStale();}
+            if(mode==2&&autoRefreshPending){autoRefreshPending=false;refreshOnOpen();}
             if(mode==2){
                 scale=std::max(.5f,std::min(display.width/800.f,display.height/480.f));viewWidth=display.width/scale;viewHeight=display.height/scale;
                 auto rect=[&](float x,float y,float w,float h,std::uint32_t color){commands.push_back({.type=pl::modmenu::DrawCommandType::RectFilled,.x=x*scale,.y=y*scale,.w=w*scale,.h=h*scale,.color=color});};
