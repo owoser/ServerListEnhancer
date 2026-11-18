@@ -89,6 +89,10 @@ struct FormField {
 std::mutex gMutex;
 
 bool  gOpen{false};
+// 淡入淡出：打开/关闭面板时用 180ms 的透明度过渡，避免整块面板瞬间蹦出。
+float gFade{0.0f};                                  // 0..1 线性进度，渲染线程独占
+float gUiAlpha{1.0f};                               // 本帧实际使用的透明度（smoothstep 之后）
+std::chrono::steady_clock::time_point gFadeAt{};    // 上一帧时间，用于按时间推进
 Page  gPage{Page::List};
 std::string gSelectedId;
 int   gScrollRow{0};
@@ -182,7 +186,7 @@ void fillRect(MinecraftUIRenderContext& ctx, Rect const& r, mce::Color const& co
     area._x1 = std::round(r.x1*gGuiScale)/gGuiScale;
     area._y0 = std::round(r.y0*gGuiScale)/gGuiScale;
     area._y1 = std::round(r.y1*gGuiScale)/gGuiScale;
-    ctx.fillRectangle(area, color, alpha);
+    ctx.fillRectangle(area, color, alpha * gUiAlpha);
 }
 
 // ctx.drawText 只是把绘制命令排队，真正提交在 flushText；文本缓冲必须活到那时，
@@ -224,7 +228,9 @@ void drawText(
 
     TextMeasureData  textData{fontSize, 0.0f, false, false, false, alignment};
     CaretMeasureData caretData{0, false};
-    ctx.drawText(font, area, stable, color, 1.0f, alignment, textData, caretData);
+    mce::Color           faded{color};
+    faded.a *= gUiAlpha;
+    ctx.drawText(font, area, stable, faded, 1.0f, alignment, textData, caretData);
 }
 
 mce::Color color8(int r,int g,int b,float alpha=1.0f){return mce::Color(r/255.f,g/255.f,b/255.f,alpha);}
@@ -236,7 +242,7 @@ void drawVanillaButton(
     bool const pressed = hot && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     auto const state = !hot ? vanilla::ButtonState::Normal
                            : pressed ? vanilla::ButtonState::Pressed : vanilla::ButtonState::Hover;
-    drawVanillaButtonSkin(ctx, r, state);
+    drawVanillaButtonSkin(ctx, r, state, gUiAlpha);
     // Same default font, no shadow, natural line box centered in the button.
     float const height = font.getWrapHeight() * fontSize;
     float const y = std::floor((r.y0 + r.y1 - height) * 0.5f) + (pressed ? 1.0f : 0.0f);
@@ -251,8 +257,8 @@ void drawGreenButton(
     std::string_view label, bool hot, bool enabled = true, float fontSize = 1.0f
 ) {
     bool const pressed = hot && enabled && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    if (enabled) drawVanillaButtonSkin(ctx, r, pressed ? vanilla::ButtonState::Pressed : vanilla::ButtonState::Hover);
-    else drawVanillaButtonSkin(ctx, r, vanilla::ButtonState::Normal);
+    if (enabled) drawVanillaButtonSkin(ctx, r, pressed ? vanilla::ButtonState::Pressed : vanilla::ButtonState::Hover, gUiAlpha);
+    else drawVanillaButtonSkin(ctx, r, vanilla::ButtonState::Normal, gUiAlpha);
     float const height = font.getWrapHeight() * fontSize;
     float const y = std::floor((r.y0 + r.y1 - height) * 0.5f) + (pressed ? 1.0f : 0.0f);
     Rect const textRect{r.x0 + 3.0f, y, r.x1 - 3.0f, y + height};
@@ -634,14 +640,32 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     pollKeyboard();
     {std::lock_guard lock(gMutex);open=gOpen;page=gPage;}
 
-    if (!open) {
-        drawMenuButton(ctx, *font, entry, mx, my, mouseSeen);
-    } else if (page == Page::List) {
-        drawListPage(ctx, *font, sw, sh, mx, my, mouseSeen);
-    } else if (page == Page::Form) {
-        drawFormPage(ctx, *font, sw, sh, mx, my, mouseSeen);
+    // 180ms 淡入淡出：按真实帧间隔推进，再用 smoothstep 让起止都不生硬。
+    auto const nowTick = Clock::now();
+    float      dt      = 0.0f;
+    if (gFadeAt.time_since_epoch().count() != 0) {
+        dt = std::chrono::duration<float>(nowTick - gFadeAt).count();
+    }
+    gFadeAt = nowTick;
+    dt      = std::clamp(dt, 0.0f, 0.1f);
+    float const target = open ? 1.0f : 0.0f;
+    float const step   = dt / 0.18f;
+    gFade = gFade < target ? std::min(target, gFade + step) : std::max(target, gFade - step);
+    float const eased = gFade * gFade * (3.0f - 2.0f * gFade);
+
+    if (open || gFade > 0.002f) {
+        // 关闭过程中仍按剩余透明度重绘一帧帧，直到完全透明。
+        gUiAlpha = eased;
+        if (page == Page::List) {
+            drawListPage(ctx, *font, sw, sh, mx, my, mouseSeen);
+        } else if (page == Page::Form) {
+            drawFormPage(ctx, *font, sw, sh, mx, my, mouseSeen);
+        } else {
+            drawConfirmPage(ctx, *font, sw, sh, mx, my, mouseSeen);
+        }
     } else {
-        drawConfirmPage(ctx, *font, sw, sh, mx, my, mouseSeen);
+        gUiAlpha = 1.0f;
+        drawMenuButton(ctx, *font, entry, mx, my, mouseSeen);
     }
 
     drawToast(ctx, *font, sw, sh);
