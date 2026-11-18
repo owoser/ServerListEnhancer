@@ -106,10 +106,10 @@ bool drawAnimatedImage(MinecraftUIRenderContext& ctx,vanilla::Rect rect,std::sha
  auto now=Clock::now();
  auto it=std::find_if(textures.begin(),textures.end(),[&](auto const& t){return t.animation==animation;});
  if(it==textures.end()){
-  std::size_t textureBytes{};for(auto const& t:textures)textureBytes+=std::size_t(t.animation->width)*t.animation->height*4;
-  if(textures.size()>=8||textureBytes+std::size_t(animation->width)*animation->height*4>32u*1024*1024)return false;
   auto ci=ll::service::bedrock::getClientInstance();if(!ci)return false;
   auto group=ci->getTextureGroup();if(!group)return false;
+  std::size_t textureBytes{};for(auto const& t:textures)textureBytes+=std::size_t(t.animation->width)*t.animation->height*4;
+  if(textures.size()>=8||textureBytes+std::size_t(animation->width)*animation->height*4>32u*1024*1024)return false;
   AnimationTexture t;t.animation=animation;t.group=std::move(group);
   t.path="sle_animation_"+std::to_string(++textureSequence);textures.push_back(std::move(t));it=std::prev(textures.end());
   ClientEntry::getInstance().getSelf().getLogger().info("[GIF] texture={}, {}x{}, frames={}, live={}, cpuBytes={}",it->path,animation->width,animation->height,animation->frames.size(),textures.size(),gifMemoryBytes());
@@ -139,5 +139,13 @@ bool drawAnimatedImage(MinecraftUIRenderContext& ctx,vanilla::Rect rect,std::sha
  static HashedString material("ui_textured_and_color");mce::Color white{1.f,1.f,1.f,1.f};
  ctx.flushImages(white,alpha,material);ctx.drawImage(texture->mClientTexture.get(),{rect.x0,rect.y0},{rect.width(),rect.height()},{0,0},{1,1},false);ctx.flushImages(white,alpha,material);
  return true;
+}
+
+void resetAnimatedTextures(){
+ // 退出世界后客户端的纹理组会失效或被复用，旧贴图再也更新不上，表现就是 GIF 停在首帧。
+ std::lock_guard lock(textureMutex);
+ std::size_t const dropped=textures.size();
+ textures.clear();
+ ClientEntry::getInstance().getSelf().getLogger().info("[GIF] textures reset on level exit, dropped={}",dropped);
 }
 } // namespace sle::client

@@ -19,5 +19,7 @@ namespace sle::client {
 
 void beginImageFrame();
 void endImageFrame(bool visible);
+// 世界切换会让缓存贴图挂在失效的纹理组上，退出世界时清空全部动画贴图。
+void resetAnimatedTextures();
 bool drawAnimatedImage(MinecraftUIRenderContext&,vanilla::Rect,std::shared_ptr<GifAnimation const> const&,bool contain=true,float alpha=1.0f);
 } // namespace sle::client

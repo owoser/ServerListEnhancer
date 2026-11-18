@@ -19,6 +19,7 @@
 #include "ll/api/Versions.h"
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/client/ClientExitLevelEvent.h"
+#include "NativeImage.h"
 #include "ll/api/event/client/ClientStartJoinLevelEvent.h"
 #include "ll/api/io/Logger.h"
 #include "ll/api/mod/RegisterHelper.h"
@@ -107,6 +108,7 @@ bool ClientEntry::enable() {
         mExitListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::client::ClientExitLevelEvent>(
             [](ll::event::client::ClientExitLevelEvent&) {
                 SessionTracker::getInstance().onExit();
+                sle::client::resetAnimatedTextures();
                 ClientEntry::getInstance().getSelf().getLogger().info("已退出服务器，当前会话失效");
             }
         );
