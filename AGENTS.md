@@ -3,7 +3,7 @@
 
 AOCI 为本仓库维护一个稳定、可版本化、可增量更新的仓库级认知层，供模型跨任务复用对系统的理解。
 
-`aoci.txt` 是面向模型的结构化认知索引。它以每个受管理文件、数据库表或其他受管理对象一条独立 Entry 的方式，用符号标签与 F/R/A/S 语义表达对象的核心职责、重要关系、对外契约，以及理解或修改系统时必须知道的非显然约束和设计决策。
+`aoci.txt` 是仓库认知的 Root Manifest（Volumes v1 布局：约 7 行 `#` 指令，只声明 `aoci.meta.txt` 与 `aoci.code.txt` 两个 Volume，本身不含条目）。以每个受管理文件、数据库表或其他受管理对象一条独立 Entry、用符号标签与 F/R/A/S 语义表达的完整索引在 `aoci.code.txt`（本仓 89 条）；项目规则、标签字典与校准示例在 `aoci.meta.txt`。Entry 表达对象的核心职责、重要关系、对外契约，以及理解或修改系统时必须知道的非显然约束和设计决策。
 
 Header、目录段和全部 Entry 共同组成完整仓库索引，可以覆盖前端、后端、配置、数据库结构及其他受管理内容。受管理内容发生变化时，通常只需维护受影响的认知条目，不需要重新生成整个索引。
 
@@ -74,7 +74,7 @@ Entry 的语义必须来自模型对真实证据的理解。不得仅依据路�
 
 ### 任务收尾与认知维护
 
-5. 纯只读问答、分析、版本核验，或没有产生受AOCI管理对象变化的任务，不需要调用维护工具。当前AOCI版本是任意`aoci_overview` check_only或`aoci_maintain`响应里的`cognition_receipt.mcp_service_version`；二进制路径是项目`.mcp.json`里的`command`，CLI不必在PATH上。
+5. 纯只读问答、分析、版本核验，或没有产生受AOCI管理对象变化的任务，不需要调用维护工具。当前AOCI版本是任意`aoci_overview` check_only或`aoci_maintain`响应里的`cognition_receipt.mcp_service_version`；二进制路径与仓库绑定写在宿主 MCP 配置的 `command` / `args` 里（本仓不是 `.mcp.json`，而是 DSH profile 的 `aoci_sle` 服务，见文末“项目约定”），CLI不必在PATH上。
 
 6. 发生受AOCI管理对象变化时，待其达到本次任务的最终稳定状态后，只调用一次 `aoci_maintain`。不要在每次中间修改后逐文件维护。
 
@@ -101,3 +101,54 @@ Entry 的语义必须来自模型对真实证据的理解。不得仅依据路�
 
 不预加载、不猜测，也不自行重建这些专项流程。平台调用方式、请求格式、批次上限、审批规则、索引格式细节和恢复步骤由对应Guide、工具说明、模型Prompt和CLI帮助按需提供。
 <!-- aoci:end -->
+
+## 项目约定（ServerListEnhancer）
+
+本段由维护者手工维护，不属于 AOCI 托管区块：`aoci init` / 工具升级只替换 `aoci:begin` 与 `aoci:end` 之间的内容，不会覆盖本段；反之修改本段也不会破坏 AOCI 会话合同。
+
+### 定位与目录
+
+- 双目标 C++ 模组：Windows x64（LeviLamina 26.60.8）+ Android ARM64（LeviLauncher Android Preloader SDK）。`src/` 为共用代码，`src-client/`、`src-server/` 按 `--target_type` 条件编译，`android/` 承载 Android 构建与 Java 侧。
+- `build/`、`bin/`、`dist/`、`.xmake/`、`.xmake-repo/`、`*.log` 全部不进版本库；`build/android-reference/` 是外部参考仓库（改它对本仓无效，也不要把它当业务代码）。
+- 根目录的 `%SystemDrive%/` 是历史误建目录，已在 `.gitignore` 排除，不要往里写，也不要当作构建产物处理。
+- `scratch/` 通过 `.git/info/exclude` 本地忽略，可放调试脚本、截图与临时 JSON，不进版本库。
+
+### 构建（两端配置不能并发切换）
+
+```sh
+xmake f -P . --target_type=client --ll_version=26.60.8 -y
+xmake -P . -y
+# 先把 bin/ServerListEnhancer 产物拷走，再切服务端；该目录会被覆盖
+xmake f -P . --target_type=server --ll_version=26.60.8 -y
+xmake -P . -y
+```
+
+- 需要 xmake、Visual Studio C++ 工具链、clang-cl。默认 LL 26.60.8；客户端构建拒绝更旧的 SDK，服务端可独立指定版本。
+- 客户端最低运行版本 LL26.60.8；客户端与服务端 DLL **不可混用**，最低版本门禁不代表未来游戏 ABI 已验证。
+- Android 打包：`scripts/package-android.ps1 -SdkRoot <SDK> -NdkHome <SDK>/ndk/28.2.13676358`。要求 CMake ≥3.24、Ninja、Git、JDK 17、NDK **28.2.13676358**（NDK 30 产出的库会因启动器 libc++ 缺 `__hash_memory` 实机加载失败），默认仅 arm64-v8a / API 28+，产物在 `dist/android/`。Preloader SDK 锁定 LeviLauncher Android v1.6.0 提交 `5d108da350ce3e7f13f51415f81e65344ecd5d14`，模板的旧 0.2.2 结构体不兼容。
+
+### 验证
+
+测试没有统一 runner，必须按名调用：
+
+- Windows/公共：`tests/Run-Regression.cmd`、`tests/image_pipeline_test.cpp`、`tests/status_queue_test.cpp`、`tests/vanilla_ui_test.cpp`、`tests/gif_test.cpp`、`tests/input_model_test.cpp`、`tests/ll_version_test.cpp`、`tests/udp_probe_test.cpp`。
+- Android：`tests/Run-Android-Interaction.ps1`（协议与按压状态 CTest + Java 入口回归）、`tests/android_touch_test.cpp`、`tests/android_model_test.cpp`、`tests/HomeEntryInteractionTest.java`。
+- 辅助脚本：`tests/Inspect-ClientUi.ps1`、`tests/Compare-VanillaButtons.ps1`、`tests/generate-gif-fixtures.cjs`、`tests/run-dev-server.cjs`、`tests/server_join_live.cjs`。
+
+### 打包与升级
+
+- `scripts/package-ui-gif.ps1`（UI GIF 资源）、`scripts/generate-builtin-assets.cjs`（内置默认图与 logo）、`scripts/package-android.ps1`（Android，只收 `.levipack`）。打包会把 `THIRD_PARTY_NOTICES.md` 写入包内。
+- 安装/更新必须保留用户的 `servers.json` 与配置；不要把 Windows DLL 改扩展名当 Android 包导入。
+
+### AOCI 接入（本仓实际形态）
+
+- MCP 服务名是 `aoci_sle`。同一宿主配置里还有 `aoci`、`aoci_pve`、`aoci_dragon`、`aoci_call` 分别指向其他仓库，调错会把别的仓库的认知当成本仓库的。
+- 宿主配置：`C:\Users\WLK-GAMES\.dsh\profiles\web\cordis.patch.yml`，`command: C:/aoci/bin/aoci.exe`，`args: --repo E:/code/LL3/Plugins/ServerListEnhancer mcp`，`toolCallTimeoutMs: 180000`，`resident`。本仓没有 `.mcp.json`。
+- CLI 等价调用：`C:/aoci/bin/aoci.exe --repo E:/code/LL3/Plugins/ServerListEnhancer <command>`（0.1.0-rc21）；接入自检用 `aoci doctor`。
+- 索引与治理资产：`aoci.txt`（Root Manifest）、`aoci.meta.txt`（规则与标签字典）、`aoci.code.txt`（89 条 Code Entry）；`.aoci/baseline.json`、`.aoci/config.json` 入库，其余 `.aoci/**` 由白名单式 `.gitignore` 排除。
+- `aoci status --deep` 在 volumes-v1 会报“不支持修改Volumes v1正式认知”，对齐状态改用 `aoci verify` / `aoci check` 或 MCP `aoci_overview(check_only=true)`。
+- 2026-11-18 复核：`structure_valid`、`governance_aligned`、drift 全空、whole_index 14262 tokens（healthy）；11 条 E 规模字母与行数偏差仅为提示，不阻断提交。
+
+### 文档分工
+
+`README.md` 对外说明（已实现功能、安装升级、构建、限制）；`docs/android.md` Android 目录/构建/手机导入；`docs/join-game.md`、`docs/discovery-images.md`、`docs/validation-discovery.md`、`docs/validation-ui-gif.md` 描述加入游戏、图片发现与验证流程；`docs/mcapi-request.md` 记录原版接口调研。文档与源码冲突时以源码和测试为准。

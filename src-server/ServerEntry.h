@@ -1,9 +1,6 @@
 #pragma once
 
-#include "ll/api/event/EventBus.h"
 #include "ll/api/mod/NativeMod.h"
-
-#include <memory>
 
 namespace sle::server {
 
@@ -21,8 +18,7 @@ public:
     bool unload();
 
 private:
-    ll::mod::NativeMod&   mSelf;
-    ll::event::ListenerPtr mListener{};
+    ll::mod::NativeMod& mSelf;
 };
 
 } // namespace sle::server

@@ -21,13 +21,13 @@
 ```
 
 - Logo 优先级：合法非空 logoData > logoUrl > 内置 default。
-- logoData 仅接受规范 data:image/png;base64,...，解码数据 ≤24 KiB；仅用于 HTTP，不改变旧二进制 Packet。删除该键或置空后重载会取消覆盖。
+- logoData 仅接受规范 data:image/png;base64,...，解码数据 ≤24 KiB；只出现在 HTTP 响应，不进入游戏网络协议。删除该键或置空后重载会取消覆盖。
 - 简介图使用 introImageUrl，为空使用内置风景图，大图不要放进状态 JSON。Logo/简介图的 URL 均可指向 PNG、JPEG 或 GIF。
 - udpProbePort 默认 0（关闭）。NetherNet 无标准 RakNet ping 时，可显式设置空闲 UDP 端口（如19135），并自行开放防火墙。禁止1024以下端口及19132/19133，不能与游戏端口共用。
 - URL 仅 http/https，服务端字段最多512字节；简介最多1024 UTF-8字节；ID仅字母、数字、下划线、连字符，最多64字节。
 - 当前客户端真正内置的 ID 是 default。未知 ID 安全回退 default，不能用 ID 传任意路径。
 - serverId 用于诊断，不是客户端缓存归属，建议使用英文稳定 ID。
-- 修改后执行 /sle reload，发布不可变 HTTP 快照，并兼容推送给在线客户端。/sle push 仅重新推送旧 Packet。
+- 修改后执行 /sle reload，立即发布不可变 HTTP 快照；客户端按自身刷新周期重新拉取，玩家进服与否不影响图文获取。
 - enabled:false 显式撤销远程图文，不破坏原生状态响应。
 - **不支持服务端热卸载。配置重载不等于 DLL 升级，更新必须停止并重启服务器。**
 

@@ -4,6 +4,7 @@
 
 #include "ClientEntry.h"
 
+#include "ClientConfig.h"
 #include "ProbeOverlay.h"
 #include "ImageProvider.h"
 #include "LatencyProbe.h"
@@ -12,9 +13,6 @@
 #include "ServerStatus.h"
 #include "common/Endpoint.h"
 #include "ServerStore.h"
-#include "SessionTracker.h"
-#include "VisualCache.h"
-#include "VisualPacketHandler.h"
 
 #include "ll/api/Versions.h"
 #include "ll/api/event/EventBus.h"
@@ -27,11 +25,6 @@
 #include <filesystem>
 
 namespace sle::client {
-
-namespace {
-// 全局实例存在即触发 PacketRegistrar 注册
-[[maybe_unused]] VisualPacketHandler gPacketHandler;
-} // namespace
 
 ClientEntry& ClientEntry::getInstance() {
     static ClientEntry instance;
@@ -54,16 +47,12 @@ bool ClientEntry::load() {
     }
     logger.info("ServerListEnhancer (client) 加载中...");
 
-    // mods/ServerListEnhancer/config -> mods/ServerListEnhancer/cache/visuals.json
-    auto cachePath = getSelf().getConfigDir().parent_path() / "cache" / "visuals.json";
-    cachePath.make_preferred();
-
-    auto& cache = VisualCache::getInstance();
-    cache.setPath(cachePath);
-    if (cache.load()) {
-        logger.info("视觉缓存已加载: {} ({} 条)", cachePath.string(), cache.size());
-    } else {
-        logger.warn("视觉缓存读取失败或结构不兼容，按空缓存启动: {}", cachePath.string());
+    // mods/ServerListEnhancer/config/config.json：缺失时写入默认值（调试日志默认关闭）
+    auto configPath = getSelf().getConfigDir() / "config.json";
+    configPath.make_preferred();
+    loadClientConfig(configPath);
+    if (debugLogging()) {
+        logger.info("调试日志已开启: {}", configPath.string());
     }
 
     // mods/ServerListEnhancer/servers.json：自维护的服务器列表
@@ -95,7 +84,6 @@ bool ClientEntry::enable() {
     if (!mJoinListener) {
         mJoinListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::client::ClientStartJoinLevelEvent>(
             [](ll::event::client::ClientStartJoinLevelEvent& event) {
-                SessionTracker::getInstance().onStartJoin(event.serverName(), event.worldName());
                 ClientEntry::getInstance().getSelf().getLogger().info(
                     "开始连接服务器: name={}, world={}",
                     event.serverName(),
@@ -107,7 +95,6 @@ bool ClientEntry::enable() {
     if (!mExitListener) {
         mExitListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::client::ClientExitLevelEvent>(
             [](ll::event::client::ClientExitLevelEvent&) {
-                SessionTracker::getInstance().onExit();
                 sle::client::resetAnimatedTextures();
                 ClientEntry::getInstance().getSelf().getLogger().info("已退出服务器，当前会话失效");
             }
@@ -138,7 +125,6 @@ bool ClientEntry::disable() {
     ServerStatus::getInstance().stop();
     ImageProvider::getInstance().stop();
     LatencyProbe::getInstance().stop();
-    VisualCache::getInstance().save();
     return true;
 }
 

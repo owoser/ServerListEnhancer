@@ -19,7 +19,7 @@
 #include "LatencyProbe.h"
 #include "common/UdpProbeProtocol.h"
 #include "ServerStore.h"
-#include "VisualCache.h"
+#include "ClientConfig.h"
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/input/KeyInputEvent.h"
@@ -50,7 +50,6 @@
 #include <cmath>
 #include <deque>
 #include <cstdint>
-#include <fstream>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -156,18 +155,6 @@ ll::event::ListenerPtr gMouseListener{};
 ll::event::ListenerPtr gKeyListener{};
 
 auto& probeLogger() { return ClientEntry::getInstance().getSelf().getLogger(); }
-
-void trace(std::string_view msg) {
-    static std::mutex mutex;
-    std::lock_guard   lock(mutex);
-    auto              path = ClientEntry::getInstance().getSelf().getConfigDir().parent_path() / "probe_trace.log";
-    path.make_preferred();
-    std::ofstream ofs(path, std::ios::app);
-    if (ofs) {
-        ofs << msg << '\n';
-        ofs.flush();
-    }
-}
 
 std::string truncateUtf8(std::string const& text, std::size_t maxBytes) {
     if (text.size() <= maxBytes) {
@@ -593,9 +580,11 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
         + (menu.playVisible ? ":play" : ":no-play");
     if (state != lastState) {
         lastState=state;
-        probeLogger().info("[UI/native-v2] {} modal={} focusModal={} play=({},{} {}x{}) step={}",
-            state, menu.modalVisible, menu.focusModal, menu.play.x0,menu.play.y0,
-            menu.play.width(),menu.play.height(),menu.rowStep);
+        if (debugLogging()) {
+            probeLogger().info("[UI/native-v2] {} modal={} focusModal={} play=({},{} {}x{}) step={}",
+                state, menu.modalVisible, menu.focusModal, menu.play.x0,menu.play.y0,
+                menu.play.width(),menu.play.height(),menu.rowStep);
+        }
     }
     gVisible.store(allowed);
     {
@@ -680,7 +669,7 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     endImageFrame(listVisibleNow);
     static bool wasListVisible{};
     bool const listVisible=open&&page==Page::List;
-    if(wasListVisible&&!listVisible)probeLogger().info("[GIF] list hidden, decodedBytes={}",gifMemoryBytes());
+    if(wasListVisible&&!listVisible&&debugLogging())probeLogger().info("[GIF] list hidden, decodedBytes={}",gifMemoryBytes());
     wasListVisible=listVisible;
     if(!listVisible)LatencyProbe::getInstance().pause();
 }
@@ -710,7 +699,7 @@ void startAddForm() {
     gFormError.clear();gEditors={};gCaretAt=Clock::now();
     rebuildFields();
     gPage = Page::Form;
-    probeLogger().info("[UI] form opened (add)");
+    if (debugLogging()) probeLogger().info("[UI] form opened (add)");
 }
 
 // 列表页“加入游戏”：取当前选中条目，交给原版 joiner 直连。
@@ -724,7 +713,7 @@ void joinSelected() {
     auto entries = ServerStore::getInstance().list();
     auto it      = std::find_if(entries.begin(), entries.end(), [&](auto const& e) { return e.id == id; });
     if (it == entries.end()) {
-        probeLogger().info("[UI] join: no selection");
+        if (debugLogging()) probeLogger().info("[UI] join: no selection");
         return;
     }
     if (!validServerEndpoint(it->address, it->port)) {
@@ -791,7 +780,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     static std::atomic<int> sMouseLogs{0};
     int  rawAction = static_cast<int>(event.actionButtonId());
     int  rawButton = static_cast<int>(event.buttonData());
-    if (rawAction != 0 || sMouseLogs.load() < 5) {
+    if (debugLogging() && (rawAction != 0 || sMouseLogs.load() < 5)) {
         if (sMouseLogs.load() < 40) {
             sMouseLogs.fetch_add(1);
             probeLogger().info(
@@ -890,7 +879,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         formId      = gFormId;
     }
 
-    probeLogger().info("[UI] click ui=({}, {}) page={} open={}", uiX, uiY, static_cast<int>(page), open ? 1 : 0);
+    if (debugLogging()) probeLogger().info("[UI] click ui=({}, {}) page={} open={}", uiX, uiY, static_cast<int>(page), open ? 1 : 0);
 
     if (!open) {
         if (buttonValid && button.contains(uiX, uiY)) {
@@ -908,18 +897,18 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
 
     if (page == Page::List) {
         if (closeBtn.contains(uiX, uiY)) {
-            probeLogger().info("[UI] hit close");
+            if (debugLogging()) probeLogger().info("[UI] hit close");
             std::lock_guard lock(gMutex);
             gOpen = false;
             return;
         }
         if (joinBtn.width() > 0 && joinBtn.contains(uiX, uiY)) {
-            probeLogger().info("[UI] hit join");
+            if (debugLogging()) probeLogger().info("[UI] hit join");
             joinSelected();
             return;
         }
         if (addBtn.contains(uiX, uiY)) {
-            probeLogger().info("[UI] hit add");
+            if (debugLogging()) probeLogger().info("[UI] hit add");
             startAddForm();
             return;
         }

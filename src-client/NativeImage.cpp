@@ -15,6 +15,7 @@
 #include <vector>
 #include <cstring>
 #include <mutex>
+#include "ClientConfig.h"
 #include "ClientEntry.h"
 #include "ll/api/io/Logger.h"
 #include "ll/api/service/TargetedBedrock.h"
@@ -96,7 +97,7 @@ void endImageFrame(bool visible){
    if(it->group)it->group->unloadTexture(ResourceLocation{Core::PathView{it->path},ResourceFileSystem::Raw},false);
    auto path=it->path;
    it=textures.erase(it);
-   ClientEntry::getInstance().getSelf().getLogger().info("[GIF] released texture={}, remaining={}, cpuBytes={}",path,textures.size(),gifMemoryBytes());
+   if(debugLogging())ClientEntry::getInstance().getSelf().getLogger().info("[GIF] released texture={}, remaining={}, cpuBytes={}",path,textures.size(),gifMemoryBytes());
   }else ++it;
  }
 }
@@ -112,7 +113,7 @@ bool drawAnimatedImage(MinecraftUIRenderContext& ctx,vanilla::Rect rect,std::sha
   if(textures.size()>=8||textureBytes+std::size_t(animation->width)*animation->height*4>32u*1024*1024)return false;
   AnimationTexture t;t.animation=animation;t.group=std::move(group);
   t.path="sle_animation_"+std::to_string(++textureSequence);textures.push_back(std::move(t));it=std::prev(textures.end());
-  ClientEntry::getInstance().getSelf().getLogger().info("[GIF] texture={}, {}x{}, frames={}, live={}, cpuBytes={}",it->path,animation->width,animation->height,animation->frames.size(),textures.size(),gifMemoryBytes());
+  if(debugLogging())ClientEntry::getInstance().getSelf().getLogger().info("[GIF] texture={}, {}x{}, frames={}, live={}, cpuBytes={}",it->path,animation->width,animation->height,animation->frames.size(),textures.size(),gifMemoryBytes());
  }
  auto& t=*it;
  auto delta=now-t.last;
@@ -132,7 +133,7 @@ bool drawAnimatedImage(MinecraftUIRenderContext& ctx,vanilla::Rect rect,std::sha
   if(t.frame==~std::size_t{})t.group->uploadTexture(location,std::move(buffer));
   else if(!t.group->updateTextureInPlace(location,std::move(buffer)))return false;
   t.frame=frame;
-  if(++t.updates==3)ClientEntry::getInstance().getSelf().getLogger().info("[GIF] playback confirmed texture={}, frame={}, uploads={}",t.path,frame,t.updates);
+  if(++t.updates==3&&debugLogging())ClientEntry::getInstance().getSelf().getLogger().info("[GIF] playback confirmed texture={}, frame={}, uploads={}",t.path,frame,t.updates);
  }
  auto handle=ctx.getTexture(location,false);auto const& texture=handle.mClientTexture.get();if(!texture)return false;
  if(contain){auto scale=std::min(rect.width()/animation->width,rect.height()/animation->height);auto w=scale*animation->width,h=scale*animation->height;rect.x0+=(rect.width()-w)/2;rect.y0+=(rect.height()-h)/2;rect.x1=rect.x0+w;rect.y1=rect.y0+h;}
@@ -146,6 +147,6 @@ void resetAnimatedTextures(){
  std::lock_guard lock(textureMutex);
  std::size_t const dropped=textures.size();
  textures.clear();
- ClientEntry::getInstance().getSelf().getLogger().info("[GIF] textures reset on level exit, dropped={}",dropped);
+ if(debugLogging())ClientEntry::getInstance().getSelf().getLogger().info("[GIF] textures reset on level exit, dropped={}",dropped);
 }
 } // namespace sle::client

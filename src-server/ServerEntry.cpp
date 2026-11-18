@@ -4,8 +4,6 @@
 
 #include "ServerEntry.h"
 
-#include "common/ServerVisualPacket.h"
-#include "common/VisualSpec.h"
 #include "ServerConfig.h"
 #include "JoinInfoExtension.h"
 #include "UdpEcho.h"
@@ -13,8 +11,6 @@
 #include "ll/api/command/Command.h"
 #include "ll/api/command/CommandHandle.h"
 #include "ll/api/command/CommandRegistrar.h"
-#include "ll/api/event/EventBus.h"
-#include "ll/api/event/player/PlayerJoinEvent.h"
 #include "ll/api/io/Logger.h"
 #include "ll/api/mod/RegisterHelper.h"
 #include "mc/server/commands/CommandOrigin.h"
@@ -27,51 +23,13 @@
 namespace sle::server {
 
 // Reflection of required parameter names needs externally linked types (Boost.PFR).
-enum class AdminAction { reload, push };
+enum class AdminAction { reload };
 struct ActionParam {
     AdminAction action;
 };
 
 namespace {
 constexpr char kCommandName[] = "sle";
-
-// 玩家进服时下发视觉档案；客户端未装模组时 canSendTo 返回 false，静默跳过
-void onPlayerJoin(ll::event::PlayerJoinEvent& event) {
-    auto& config = ConfigManager::getInstance().get();
-    auto& logger = ServerEntry::getInstance().getSelf().getLogger();
-
-    if (!config.enabled) {
-        return;
-    }
-
-    ServerVisualPacket packet;
-    packet.spec = config.visual;
-
-    auto& player = event.self();
-    if (!packet.canSendTo(player)) {
-        logger.debug("玩家 {} 未安装客户端模组，跳过视觉档案下发", player.getRealName());
-        return;
-    }
-
-    packet.sendTo(player);
-    logger.info(
-        "已向玩家 {} 下发视觉档案 (serverId={}, logo={}, introLen={})",
-        player.getRealName(),
-        packet.spec.serverId,
-        packet.spec.logoUrl.empty() ? packet.spec.logoId : packet.spec.logoUrl,
-        packet.spec.introText.size()
-    );
-}
-
-void sendToAll() {
-    auto& config = ConfigManager::getInstance().get();
-    if (!config.enabled) {
-        return;
-    }
-    ServerVisualPacket packet;
-    packet.spec = config.visual;
-    packet.sendToClients();
-}
 
 void registerCommand() {
     auto& registrar = ll::command::CommandRegistrar::getInstance(false);
@@ -86,15 +44,10 @@ void registerCommand() {
                 if (ConfigManager::getInstance().reload()) {
                     startUdpEcho(ConfigManager::getInstance().get().udpProbePort);
                     refreshJoinInfoSnapshot();
-                    output.success("配置已重新加载，HTTP视觉快照已发布");
-                    sendToAll();
+                    output.success("配置已重新加载，/v1/join 快照已发布");
                 } else {
                     output.error("配置重新加载失败，请检查 config.json");
                 }
-                break;
-            case AdminAction::push:
-                sendToAll();
-                output.success("已向在线客户端重新推送视觉档案");
                 break;
             }
         }
@@ -139,9 +92,6 @@ bool ServerEntry::enable() {
     if (!installJoinInfoExtension()) return false;
     if(!startUdpEcho(ConfigManager::getInstance().get().udpProbePort))getSelf().getLogger().warn("UDP探测端口未启用，请检查配置/端口占用");
     setJoinInfoEnabled(true);
-    if (!mListener) {
-        mListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::PlayerJoinEvent>(onPlayerJoin);
-    }
     registerCommand();
     getSelf().getLogger().info("ServerListEnhancer (server) 已启用");
     return true;
@@ -150,10 +100,6 @@ bool ServerEntry::enable() {
 bool ServerEntry::disable() {
     stopUdpEcho();
     uninstallJoinInfoExtension();
-    if (mListener) {
-        ll::event::EventBus::getInstance().removeListener(mListener);
-        mListener.reset();
-    }
     return true;
 }
 
