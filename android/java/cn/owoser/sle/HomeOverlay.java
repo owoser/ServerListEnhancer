@@ -93,7 +93,7 @@ public final class HomeOverlay {
     private static boolean joinInFlight;
     /**
      * 本模组发起的加入会话：只有它会在"离开世界并停在 play_screen"时补一次 BACK 回首页。
-     * 判据完全来自可观测状态：preloader 的 HUD/暂停菜单/菜单查询 + 资源包首页双标记 PixelCopy。
+     * 判据完全来自可观测状态：preloader 的 HUD/暂停菜单/菜单查询 + 资源包首页双标记 PixelCopy + play_screen 右上绿色按钮像素签名。
      */
     private static final long OWNED_JOIN_TIMEOUT_MS = 15L * 60L * 1000L;
     private static final long OWNED_JOIN_SAMPLE_MS = 450L;
@@ -104,13 +104,16 @@ public final class HomeOverlay {
     private static boolean ownedJoinSeenPause;
     private static long ownedJoinMenuSince;
     private static boolean ownedJoinNavDone;
+    private static boolean ownedJoinBackSent;
+    private static long ownedJoinBackAt;
     private static long ownedNavSampleAt;
     private static boolean homeMarkerProbeInFlight;
     private static long homeMarkerCheckedAt;
     private static volatile boolean homeMarkersPresent;
-    private static boolean playMarkerProbeInFlight;
-    private static long playMarkerCheckedAt;
-    private static volatile boolean playMarkersPresent;
+    private static boolean playSignatureProbeInFlight;
+    private static long playSignatureCheckedAt;
+    private static long playSignatureSampledAt;
+    private static volatile boolean playSignaturePresent;
     private static Method hudScreenOpenMethod;
     private static Method pauseMenuOpenMethod;
     private static Method showingMenuMethod;
@@ -659,6 +662,8 @@ public final class HomeOverlay {
         ownedJoinSeenPause = false;
         ownedJoinMenuSince = 0L;
         ownedJoinNavDone = false;
+        ownedJoinBackSent = false;
+        ownedJoinBackAt = 0L;
         ownedNavSampleAt = 0L;
         Log.i(TAG, "Owned join armed (return-to-home navigation)");
     }
@@ -696,28 +701,37 @@ public final class HomeOverlay {
             Log.i(TAG, "Owned join: pause menu seen");
         }
         maybeProbeHomeMarkers();
-        maybeProbePlayMarkers();
+        maybeProbePlaySignature();
         // 必须先在本次会话里真实见过 HUD（进入世界），否则退回首页这件事与我们无关。
         if (!ownedJoinSeenHud) return;
-        // 只有资源包在 play_screen 上画出的双标记可见时才是"正向证明"，减法判据一律不触发导航。
-        if (!playMarkersPresent) {
+        // 只有原版 play_screen 右上「创建新世界」绿色签名可见时才是"正向证明"，减法判据一律不触发导航。
+        if (!playSignaturePresent) {
             ownedJoinMenuSince = 0L;
             return;
         }
         if (homeMarkersPresent) {
             ownedJoinMenuSince = 0L;
-            Log.i(TAG, "Owned join: play markers visible but home markers also present, skip");
+            Log.i(TAG, "Owned join: play signature visible but home markers also present, skip");
             return;
         }
         if (ownedJoinMenuSince == 0L) {
             ownedJoinMenuSince = now;
-            Log.i(TAG, "Owned join: play_screen markers visible (hud=" + hud + " pause=" + pause + " menu=" + menu + ")");
+            Log.i(TAG, "Owned join: play screen signature visible (hud=" + hud + " pause=" + pause + " menu=" + menu + ")");
         }
-        if (now - ownedJoinMenuSince >= OWNED_JOIN_MENU_HOLD_MS) {
+        if (now - ownedJoinMenuSince < OWNED_JOIN_MENU_HOLD_MS) return;
+        if (!ownedJoinBackSent) {
+            ownedJoinBackSent = true;
+            ownedJoinBackAt = now;
+            Log.i(TAG, "Owned join: sending BACK (play signature)");
+            pressGameBack();
+            return;
+        }
+        // 按键分发没有生效时，再用一次 Activity 自己的返回处理；每个会话最多两次。
+        if (now - ownedJoinBackAt >= 1500L) {
             ownedJoinNavDone = true;
             ownedJoinArmed = false;
-            Log.i(TAG, "Owned join: sending one BACK to leave play_screen (positive marker)");
-            pressGameBack();
+            Log.i(TAG, "Owned join: play signature still visible, using onBackPressed once");
+            pressActivityBack();
         }
     }
 
@@ -735,6 +749,22 @@ public final class HomeOverlay {
                 current.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
             } catch (Throwable failure) {
                 Log.w(TAG, "Owned join: BACK injection failed", failure);
+            }
+        });
+    }
+
+    /** 兜底：走 Activity 自己的返回处理，仅在上一次按键注入无效时使用一次。 */
+    private static void pressActivityBack() {
+        final Activity current = activity;
+        if (current == null || current.isFinishing() || current.isDestroyed()) {
+            Log.w(TAG, "Owned join: activity unavailable, onBackPressed skipped");
+            return;
+        }
+        UI.post(() -> {
+            try {
+                current.onBackPressed();
+            } catch (Throwable failure) {
+                Log.w(TAG, "Owned join: onBackPressed failed", failure);
             }
         });
     }
@@ -788,68 +818,79 @@ public final class HomeOverlay {
         }
     }
 
-    /** play_screen 的两个 1x1 标记：(198,195,195) 与 (195,195,198)，只在 play_screen 命名空间插入。 */
-    private static final int PLAY_MARKER_SET = 195;
-    private static final int PLAY_MARKER_HIGH = 198;
+    /** play_screen 右上「创建新世界」绿色按钮的正向像素签名：固定比例区域内绿色占比高即认定停在 play_screen。 */
+    private static final float PLAY_SIGNATURE_X0 = 0.82f;
+    private static final float PLAY_SIGNATURE_X1 = 0.90f;
+    private static final float PLAY_SIGNATURE_Y0 = 0.24f;
+    private static final float PLAY_SIGNATURE_Y1 = 0.27f;
+    private static final float PLAY_SIGNATURE_MIN_RATIO = 0.6f;
+    private static final long PLAY_SIGNATURE_MAX_AGE_MS = 1000L;
+    private static final long PLAY_SIGNATURE_PROBE_MS = 700L;
 
-    private static boolean playMarkerLeftPixel(int pixel) {
+    private static boolean playSignatureGreen(int pixel) {
         int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
-        return red == PLAY_MARKER_HIGH && green == PLAY_MARKER_SET && blue == PLAY_MARKER_SET;
+        return red >= 40 && red <= 95 && green >= 120 && green <= 200 && blue >= 25 && blue <= 120;
     }
 
-    private static boolean playMarkerRightPixel(int pixel) {
-        int red = (pixel >> 16) & 255, green = (pixel >> 8) & 255, blue = pixel & 255;
-        return red == PLAY_MARKER_SET && green == PLAY_MARKER_SET && blue == PLAY_MARKER_HIGH;
-    }
-
-    /** 左上角区域同时存在两个 play 标记（水平相隔 1~8 像素）才认为正处在 play_screen。 */
-    private static boolean containsPlayMarkers(Bitmap shot) {
+    /** 采样区域内绿色像素占比（步长 2 像素）；区域非法时返回 0。 */
+    private static float playSignatureGreenRatio(Bitmap shot) {
         int width = shot.getWidth();
         int height = shot.getHeight();
-        if (width < 2 || height < 1) return false;
+        if (width < 2 || height < 2) return 0f;
         int[] row = new int[width];
-        for (int y = 0; y < height; ++y) {
+        int total = 0, green = 0;
+        for (int y = 0; y < height; y += 2) {
             shot.getPixels(row, 0, width, 0, y, width, 1);
-            for (int x = 0; x < width; ++x) {
-                if (!playMarkerLeftPixel(row[x])) continue;
-                for (int dx = 1; dx <= 8 && x + dx < width; ++dx) {
-                    if (playMarkerRightPixel(row[x + dx])) return true;
-                }
+            for (int x = 0; x < width; x += 2) {
+                ++total;
+                if (playSignatureGreen(row[x])) ++green;
             }
         }
-        return false;
+        return total <= 0 ? 0f : (float) green / (float) total;
     }
 
-    /** 采样左上角是否出现 play_screen 标记；只有 armed 会话才会用到。 */
-    private static void maybeProbePlayMarkers() {
-        if (playMarkerProbeInFlight || view == null) return;
+    /** 采样 play_screen 右上绿色按钮区域；结果带采样时间戳，超过 1 秒的迟到结果直接丢弃。 */
+    private static void maybeProbePlaySignature() {
+        if (playSignatureProbeInFlight || view == null) return;
         long now = SystemClock.uptimeMillis();
-        if (now - playMarkerCheckedAt < 700L) return;
-        playMarkerCheckedAt = now;
+        if (now - playSignatureCheckedAt < PLAY_SIGNATURE_PROBE_MS) return;
+        playSignatureCheckedAt = now;
         final Activity owner = activity;
         final OverlayView surface = view;
         if (owner == null || owner.isFinishing() || owner.isDestroyed() || surface == null) return;
-        int[] location = new int[2];
-        surface.getLocationInWindow(location);
-        final int copyWidth = 160, copyHeight = 160;
         int screenWidth = surface.getWidth(), screenHeight = surface.getHeight();
         if (screenWidth <= 0 || screenHeight <= 0) return;
+        int[] location = new int[2];
+        surface.getLocationInWindow(location);
+        final int left = location[0] + Math.round(screenWidth * PLAY_SIGNATURE_X0);
+        final int top = location[1] + Math.round(screenHeight * PLAY_SIGNATURE_Y0);
+        final int copyWidth = Math.max(2, Math.round(screenWidth * (PLAY_SIGNATURE_X1 - PLAY_SIGNATURE_X0)));
+        final int copyHeight = Math.max(2, Math.round(screenHeight * (PLAY_SIGNATURE_Y1 - PLAY_SIGNATURE_Y0)));
+        final long sampledAt = now;
+        playSignatureSampledAt = sampledAt;
         final Bitmap shot = Bitmap.createBitmap(copyWidth, copyHeight, Bitmap.Config.ARGB_8888);
-        playMarkerProbeInFlight = true;
+        playSignatureProbeInFlight = true;
         final SurfaceView gameSurface = findSurfaceView(owner);
         PixelCopy.OnPixelCopyFinishedListener listener = result -> {
-            playMarkerProbeInFlight = false;
+            playSignatureProbeInFlight = false;
+            if (SystemClock.uptimeMillis() - sampledAt > PLAY_SIGNATURE_MAX_AGE_MS) {
+                shot.recycle();
+                return;
+            }
             boolean present = false;
-            try { present = result == PixelCopy.SUCCESS && containsPlayMarkers(shot); }
-            catch (Throwable ignored) { present = false; }
+            try {
+                present = result == PixelCopy.SUCCESS && playSignatureGreenRatio(shot) >= PLAY_SIGNATURE_MIN_RATIO;
+            } catch (Throwable ignored) {
+                present = false;
+            }
             shot.recycle();
-            if (present != playMarkersPresent) {
-                playMarkersPresent = present;
-                Log.i(TAG, "Owned join: play_screen markers " + (present ? "visible" : "hidden"));
+            if (present != playSignaturePresent) {
+                playSignaturePresent = present;
+                Log.i(TAG, "Owned join: play screen signature " + (present ? "visible" : "hidden"));
             }
         };
         try {
-            Rect source = new Rect(location[0], location[1], location[0] + copyWidth, location[1] + copyHeight);
+            Rect source = new Rect(left, top, left + copyWidth, top + copyHeight);
             if (gameSurface != null) {
                 int[] surfaceLocation = new int[2];
                 gameSurface.getLocationInWindow(surfaceLocation);
@@ -860,7 +901,7 @@ public final class HomeOverlay {
                 PixelCopy.request(owner.getWindow(), source, shot, listener, UI);
             }
         } catch (Throwable failure) {
-            playMarkerProbeInFlight = false;
+            playSignatureProbeInFlight = false;
             shot.recycle();
         }
     }
