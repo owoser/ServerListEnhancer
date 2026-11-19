@@ -110,7 +110,7 @@ lip pkg view github.com/owoser/ServerListEnhancer
 
 确认远端可发现 `26.60.8001` 等目标包版本，且其清单和展开后的下载 URL 指向目标 tag 与资产；不能只凭 GitHub Release 存在就声称 lip 可安装。
 
-安装验证只在本次新建的空隔离目录进行，目录放在仓库 [build](<../build/>) 下并使用唯一名称。在该目录运行 `lip install github.com/owoser/ServerListEnhancer` 和 `lip list`，确认安装版本、LL 依赖以及 `mods/ServerListEnhancer/` 中的 DLL/清单。可在隔离目录预置临时 `config/`、`servers.json`、`cache/` 哨兵文件并记录哈希，核对安装或更新后保持不变。不要复制真实服务器或玩家资料，不切换到真实游戏/服务器目录安装，也不为测试而删除其模组目录。
+安装验证只在本次新建的空隔离目录进行，目录放在仓库 [build](<../build/>) 下并使用唯一名称。空目录还没有游戏，而本包会连带安装 LeviLamina 26.60.8，lip 会拒绝并提示先准备服务端（`error: This workspace has no game yet ...`）；因此先在同一目录执行 `lip install github.com/LiteLDev/LeviLamina --accept-eula`。接受 Minecraft EULA 与隐私政策只能由维护者本人决定，agent 不得代为加 `--accept-eula`。随后运行 `lip install github.com/owoser/ServerListEnhancer` 和 `lip list`，确认安装版本、LL 依赖以及 `mods/ServerListEnhancer/` 中的 DLL/清单。可在隔离目录预置临时 `config/`、`servers.json`、`cache/` 哨兵文件并记录哈希，核对安装或更新后保持不变。不要复制真实服务器或玩家资料，不切换到真实游戏/服务器目录安装，也不为测试而删除其模组目录。
 
 安装完成与实机启动是不同证据；如需启动验证，只运行本次明确授权的隔离/开发实例。Windows 客户端通过 LeviLauncher 验证客户端条目，Android 走 `.levipack` 导入与日志验证，不把服务端 lip 安装结果外推到另外两端。发布完成后汇报实际通过的检查、未验证项和三个下载入口。
 
