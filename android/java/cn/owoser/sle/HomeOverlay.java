@@ -2,6 +2,7 @@ package cn.owoser.sle;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -15,6 +16,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.net.Uri;
+import android.text.Editable;
+import android.text.InputType;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -24,6 +27,10 @@ import android.view.ViewConfiguration;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -99,6 +106,9 @@ public final class HomeOverlay {
     public static native boolean nativeTouch(float x, float y, int action);
     public static native boolean nativeBack();
     private static native void nativeJoinStatus(int status, String message);
+    // IME 提交的整段文本与编辑键（67 退格 / 66 回车 / 61 切换 / 21,22 左右）。
+    private static native boolean nativeText(String text);
+    private static native boolean nativeEditKey(int keyCode);
 
     /**
      * 与列表绘制使用完全相同的字体配置测量文字宽度（ANTI_ALIAS_FLAG + Typeface.DEFAULT + max(1,size)）。
@@ -112,6 +122,17 @@ public final class HomeOverlay {
             MEASURE_PAINT.setTypeface(Typeface.DEFAULT);
             MEASURE_PAINT.setTextSize(Math.max(1f, size));
             return MEASURE_PAINT.measureText(text);
+        }
+    }
+
+    public static float caretTopOffset(float size) {
+        synchronized (MEASURE_PAINT) {
+            MEASURE_PAINT.setTypeface(Typeface.DEFAULT);
+            float textSize = Math.max(1f, size);
+            MEASURE_PAINT.setTextSize(textSize);
+            Paint.FontMetrics metrics = MEASURE_PAINT.getFontMetrics();
+            // C++ 文字基线是 top + size；让等字号光标居中在 ascent/descent 行框中。
+            return (textSize + metrics.ascent + metrics.descent) * 0.5f;
         }
     }
 
@@ -296,6 +317,22 @@ public final class HomeOverlay {
 
     /** 软键盘当前是否遮挡界面，原生侧可据此把输入区整体上移或压缩。 */
     public static boolean imeVisible() { return imeHeightPx() > 0; }
+
+    /** 原生打开表单输入时调用：把焦点交给覆盖层并请求系统 IME。 */
+    public static void showKeyboard() {
+        UI.post(() -> {
+            OverlayView current = view;
+            if (current != null) current.beginTextInput();
+        });
+    }
+
+    /** 原生关闭表单输入时调用：收起键盘并把焦点还给进入编辑前的视图。 */
+    public static void hideKeyboard() {
+        UI.post(() -> {
+            OverlayView current = view;
+            if (current != null) current.endTextInput();
+        });
+    }
 
     /** 打开入口遇到瞬时 block（焦点/启动器菜单态）时的有界重试：6 次 × 120ms ≈ 700ms。 */
     private static final int HOME_OPEN_MAX_ATTEMPTS = 6;
@@ -643,6 +680,7 @@ public final class HomeOverlay {
         activeSession = 0L;
         clearFocusGrace();
         if (view != null) {
+            if (view.textInput) view.endTextInput();
             // 视觉上再画约 180ms 淡出；逻辑上已关闭，期间不再接收触摸。
             if (view.beginDismissFade()) return;
             view.mode = 0;
@@ -962,6 +1000,135 @@ public final class HomeOverlay {
             });
         }
 
+        // ---- 文本输入：真正的 InputConnection ----
+        // 覆盖层是自绘 View，本身没有 Editable。这里在表单打开时把焦点交给它，
+        // 用 BaseInputConnection(fullEditor=true) 承载组合输入缓冲：拼音只留在
+        // 本地 Editable，commitText 才把整段文本交给 native，避免把候选拼音当正文。
+        boolean textInput;
+        long inputGeneration;
+        View previousFocus;
+
+        void beginTextInput() {
+            if (!textInput && activity != null) previousFocus = activity.getCurrentFocus();
+            textInput = true;
+            ++inputGeneration;
+            setFocusableInTouchMode(true);
+            setFocusable(true);
+            requestFocus();
+            InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.restartInput(this);
+                imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT);
+            }
+            invalidate();
+        }
+
+        void endTextInput() {
+            textInput = false;
+            ++inputGeneration;
+            InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(getWindowToken(), 0);
+            clearFocus();
+            setFocusableInTouchMode(false);
+            setFocusable(false);
+            View restore = previousFocus;
+            previousFocus = null;
+            if (restore != null && restore.isAttachedToWindow()) restore.requestFocus();
+            invalidate();
+        }
+
+        @Override public boolean onCheckIsTextEditor() { return textInput; }
+
+        @Override public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+            if (!textInput) return null;
+            outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
+            // 不弹全屏编辑框：候选词就在原界面上下文中提交。
+            outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN
+                | EditorInfo.IME_ACTION_NONE;
+            outAttrs.initialSelStart = 0;
+            outAttrs.initialSelEnd = 0;
+            return new OverlayInputConnection();
+        }
+
+        boolean forwardEditKey(int keyCode) {
+            try { return nativeEditKey(keyCode); }
+            catch (Throwable failure) { Log.w(TAG, "nativeEditKey failed", failure); return true; }
+        }
+
+        boolean hasComposing(Editable editable) {
+            if (editable == null) return false;
+            int start = BaseInputConnection.getComposingSpanStart(editable);
+            int end = BaseInputConnection.getComposingSpanEnd(editable);
+            return start >= 0 && end >= 0 && start != end;
+        }
+
+        private final class OverlayInputConnection extends BaseInputConnection {
+            private final long generation = inputGeneration;
+            OverlayInputConnection() { super(OverlayView.this, true); }
+            private boolean current() { return textInput && generation == inputGeneration; }
+
+            @Override public boolean commitText(CharSequence text, int newCursorPosition) {
+                if (!current()) return true;
+                Editable editable = getEditable();
+                if (editable != null) { editable.clear(); editable.clearSpans(); }
+                if (text != null && text.length() > 0) {
+                    try { nativeText(text.toString()); }
+                    catch (Throwable failure) { Log.w(TAG, "nativeText failed", failure); }
+                }
+                return true;
+            }
+
+            @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                if (!current()) return true;
+                // 拼音串只留在本地组合区，不作为服务器名称上报。
+                return super.setComposingText(text == null ? "" : text, newCursorPosition);
+            }
+
+            @Override public boolean finishComposingText() {
+                if (!current()) return true;
+                Editable editable = getEditable();
+                String committed = editable == null ? "" : editable.toString();
+                if (editable != null) { editable.clear(); editable.clearSpans(); }
+                // 部分输入法只发 finishComposingText；commitText 已经清空过缓冲，
+                // 因而通常的 commit -> finish 不会重复插入。
+                if (!committed.isEmpty()) {
+                    try { nativeText(committed); }
+                    catch (Throwable failure) { Log.w(TAG, "nativeText failed", failure); }
+                }
+                return true;
+            }
+
+            @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                if (!current()) return true;
+                if (hasComposing(getEditable())) return super.deleteSurroundingText(beforeLength, afterLength);
+                // 正文最多 255 字节，较大的删除请求至多清空现有字段。
+                for (int i = 0; i < Math.min(Math.max(0, beforeLength), 255); ++i) forwardEditKey(KeyEvent.KEYCODE_DEL);
+                for (int i = 0; i < Math.min(Math.max(0, afterLength), 255); ++i) forwardEditKey(KeyEvent.KEYCODE_FORWARD_DEL);
+                return true;
+            }
+
+            @Override public boolean sendKeyEvent(KeyEvent event) {
+                if (!current() || event == null) return true;
+                int keyCode = event.getKeyCode();
+                boolean editKey = keyCode == KeyEvent.KEYCODE_DEL || keyCode == KeyEvent.KEYCODE_FORWARD_DEL
+                    || keyCode == KeyEvent.KEYCODE_ENTER;
+                if (editKey) {
+                    // 输入法通过 setComposingText 维护拼音；不能把组合区编辑键再投给游戏正文。
+                    if (hasComposing(getEditable())) return true;
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) forwardEditKey(keyCode);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_BACK) {
+                    if (event.getAction() == KeyEvent.ACTION_UP) {
+                        try { nativeBack(); }
+                        catch (Throwable failure) { closeActiveSession(); publishSnapshot(false); }
+                    }
+                    return true;
+                }
+                return super.sendKeyEvent(event);
+            }
+        }
+
         int surfaceWidth() { return getWidth() > 0 ? getWidth() : getRootView().getWidth(); }
         int surfaceHeight() { return getHeight() > 0 ? getHeight() : getRootView().getHeight(); }
 
@@ -1238,6 +1405,7 @@ public final class HomeOverlay {
 
         @Override protected void onDetachedFromWindow() {
             super.onDetachedFromWindow();
+            if (textInput) endTextInput();
             mode = 0;
             session = 0L;
             home = false;

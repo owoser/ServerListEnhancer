@@ -77,7 +77,7 @@ if ($allCached) { $depFlags += '-DFETCHCONTENT_FULLY_DISCONNECTED=ON' }
 $hostOptions=@('-S', (Join-Path $root 'android'), '-B', $hostBuild, '-G', 'Ninja', "-DCMAKE_MAKE_PROGRAM=$ninja", '-DCMAKE_BUILD_TYPE=Release') + $depFlags
 if ($HostCompiler) { $hostOptions += "-DCMAKE_CXX_COMPILER=$HostCompiler" }
 Invoke-Checked $CMake $hostOptions
-Invoke-Checked $CMake @('--build', $hostBuild, '--target', 'sle_generate_config', 'sle_android_model_test', 'sle_android_touch_test', '--parallel', '4')
+Invoke-Checked $CMake @('--build', $hostBuild, '--target', 'sle_generate_config', 'sle_android_model_test', 'sle_android_touch_test', 'sle_android_ime_test', '--parallel', '4')
 Invoke-Checked 'ctest' @('--test-dir', $hostBuild, '--output-on-failure')
 Invoke-Checked $CMake (@('--fresh', '-S', (Join-Path $root 'android'), '-B', $targetBuild, '-G', 'Ninja',
     "-DCMAKE_MAKE_PROGRAM=$ninja", "-DCMAKE_TOOLCHAIN_FILE=$toolchain", "-DANDROID_ABI=$Abi", '-DANDROID_PLATFORM=android-28',

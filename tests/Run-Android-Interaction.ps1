@@ -6,7 +6,7 @@ $classes = Join-Path $root 'build/android/interaction-tests'
 $androidJar = Get-ChildItem -LiteralPath (Join-Path $SdkRoot 'platforms') -Filter android.jar -Recurse -File | Sort-Object FullName -Descending | Select-Object -First 1
 if (-not $androidJar) { throw 'Android SDK android.jar is required' }
 New-Item -ItemType Directory -Force $classes | Out-Null
-& cmake --build (Join-Path $root 'build/android/host') --target sle_android_model_test sle_android_touch_test --parallel 4
+& cmake --build (Join-Path $root 'build/android/host') --target sle_android_model_test sle_android_touch_test sle_android_ime_test --parallel 4
 if ($LASTEXITCODE -ne 0) { throw 'Android host tests failed to build' }
 & ctest --test-dir (Join-Path $root 'build/android/host') --output-on-failure
 if ($LASTEXITCODE -ne 0) { throw 'Android host tests failed' }

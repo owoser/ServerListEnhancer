@@ -112,5 +112,5 @@ target("ServerListEnhancer")
         add_files("src-client/*.cpp")
         remove_files("src-client/OreUIBridge.cpp", "src-client/ServerListPage.cpp")
         add_includedirs("src/common", "src-client")
-        add_syslinks("windowscodecs", "ole32", "bcrypt", "crypt32")
+        add_syslinks("windowscodecs", "ole32", "bcrypt", "crypt32", "imm32", "gdi32")
     end

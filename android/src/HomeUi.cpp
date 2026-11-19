@@ -144,12 +144,14 @@ public:
 struct Bridge {
     JavaVM* vm{};
     jclass type{}; // Global ref retains its DexClassLoader as well.
-    jmethodID install{}, query{}, frame{}, image{}, close{}, request{}, observeTouch{}, measure{};
-    jmethodID join{}, cancelJoin{};
+    jmethodID install{}, query{}, frame{}, image{}, close{}, request{}, observeTouch{}, measure{}, caretOffset{};
+    jmethodID join{}, cancelJoin{}, showKeyboard{}, hideKeyboard{};
     std::function<void()> open;
     std::function<bool(float, float, int)> touch;
     std::function<bool()> back;
     std::function<void(int, std::string)> joinStatus;
+    std::function<bool(std::string)> text;
+    std::function<bool(int)> editKey;
     std::atomic<bool> installed{}, failed{}, closing{}, reported{};
 
     ~Bridge() {
@@ -389,6 +391,31 @@ void JNICALL nativeJoinStatus(JNIEnv* env, jclass owner, jint status, jstring me
     } catch (const std::exception& e) { fail(state, "nativeJoinStatus", e.what()); }
     catch (...) { fail(state, "nativeJoinStatus", "C++ callback threw an unknown exception"); }
 }
+// IME 提交的整段文本：组合输入（拼音）在 Java 侧消化，这里只收到最终正文。
+jboolean JNICALL nativeText(JNIEnv* env, jclass owner, jstring message) {
+    auto state = bridge();
+    if (!usable(state) || !env->IsSameObject(owner, state->type)) return JNI_FALSE;
+    try {
+        if (!message) return JNI_FALSE;
+        Jni j(state->vm);
+        auto text = j.string(message);
+        if (!state->text) return JNI_FALSE;
+        return state->text(std::move(text)) ? JNI_TRUE : JNI_FALSE;
+    } catch (const std::exception& e) { fail(state, "nativeText", e.what()); }
+    catch (...) { fail(state, "nativeText", "C++ callback threw an unknown exception"); }
+    return JNI_FALSE;
+}
+// 输入法/硬件键的编辑键：67 退格、66 回车、61 切换焦点、21/22 左右移动。
+jboolean JNICALL nativeEditKey(JNIEnv* env, jclass owner, jint keyCode) {
+    auto state = bridge();
+    if (!usable(state) || !env->IsSameObject(owner, state->type)) return JNI_FALSE;
+    try {
+        if (!state->editKey) return JNI_FALSE;
+        return state->editKey(static_cast<int>(keyCode)) ? JNI_TRUE : JNI_FALSE;
+    } catch (const std::exception& e) { fail(state, "nativeEditKey", e.what()); }
+    catch (...) { fail(state, "nativeEditKey", "C++ callback threw an unknown exception"); }
+    return JNI_FALSE;
+}
 
 void closeCurrent() {
     std::shared_ptr<Bridge> previous;
@@ -470,7 +497,9 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
                       std::function<void()> open,
                       std::function<bool(float, float, int)> touch,
                       std::function<bool()> back,
-                      std::function<void(int, std::string)> joinStatus) {
+                      std::function<void(int, std::string)> joinStatus,
+                      std::function<bool(std::string)> text,
+                      std::function<bool(int)> editKey) {
     std::lock_guard lifecycleLock(lifecycleMutex);
     closeCurrent();
     auto state = std::make_shared<Bridge>();
@@ -479,9 +508,11 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
     state->touch = std::move(touch);
     state->back = std::move(back);
     state->joinStatus = std::move(joinStatus);
+    state->text = std::move(text);
+    state->editKey = std::move(editKey);
     try {
-        if (!state->open || !state->touch || !state->back || !state->joinStatus)
-            throw std::runtime_error("HomeUi requires open, touch, back, and join status callbacks");
+        if (!state->open || !state->touch || !state->back || !state->joinStatus || !state->text || !state->editKey)
+            throw std::runtime_error("HomeUi requires open, touch, back, join status, text, and edit key callbacks");
         modRoot = std::filesystem::absolute(modRoot);
         const auto dexPath = modRoot / "ui.dex";
         std::error_code error;
@@ -533,11 +564,27 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
         state->observeTouch = j.method(state->type, "observeHomeTouch", "(FFII)V", true);
         state->join = j.method(state->type, "joinServer", "(Ljava/lang/String;I)V", true);
         state->cancelJoin = j.method(state->type, "cancelJoin", "()V", true);
+        // 可选能力：软键盘入口与方法。旧版 DEX 缺少时保持为空，AndroidMod 会退回 SDK 键盘。
+        state->showKeyboard = j.env->GetStaticMethodID(state->type, "showKeyboard", "()V");
+        if (j.env->ExceptionCheck()) {
+            j.env->ExceptionClear();
+            state->showKeyboard = nullptr;
+        }
+        state->hideKeyboard = j.env->GetStaticMethodID(state->type, "hideKeyboard", "()V");
+        if (j.env->ExceptionCheck()) {
+            j.env->ExceptionClear();
+            state->hideKeyboard = nullptr;
+        }
         // 可选能力：旧版 DEX 没有 measureText，解析失败时保持为空并退回 C++ 估算，不影响安装。
         state->measure = j.env->GetStaticMethodID(state->type, "measureText", "(Ljava/lang/String;F)F");
         if (j.env->ExceptionCheck()) {
             j.env->ExceptionClear();
             state->measure = nullptr;
+        }
+        state->caretOffset = j.env->GetStaticMethodID(state->type, "caretTopOffset", "(F)F");
+        if (j.env->ExceptionCheck()) {
+            j.env->ExceptionClear();
+            state->caretOffset = nullptr;
         }
         const JNINativeMethod natives[] = {
             {const_cast<char*>("nativeBindMainActivity"), const_cast<char*>("(Ljava/lang/Class;)Z"), reinterpret_cast<void*>(nativeBindMainActivity)},
@@ -545,8 +592,10 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
             {const_cast<char*>("nativeTouch"), const_cast<char*>("(FFI)Z"), reinterpret_cast<void*>(nativeTouch)},
             {const_cast<char*>("nativeBack"), const_cast<char*>("()Z"), reinterpret_cast<void*>(nativeBack)},
             {const_cast<char*>("nativeJoinStatus"), const_cast<char*>("(ILjava/lang/String;)V"), reinterpret_cast<void*>(nativeJoinStatus)},
+            {const_cast<char*>("nativeText"), const_cast<char*>("(Ljava/lang/String;)Z"), reinterpret_cast<void*>(nativeText)},
+            {const_cast<char*>("nativeEditKey"), const_cast<char*>("(I)Z"), reinterpret_cast<void*>(nativeEditKey)},
         };
-        const auto registration = j.env->RegisterNatives(state->type, natives, 5);
+        const auto registration = j.env->RegisterNatives(state->type, natives, 7);
         j.check("RegisterNatives(HomeOverlay)");
         if (registration != JNI_OK) throw std::runtime_error("HomeUi native callback registration failed");
         {
@@ -567,6 +616,30 @@ bool initializeHomeUi(JavaVM* vm, std::filesystem::path modRoot,
         if (current == state) current.reset();
     }
     return false;
+}
+
+bool showHomeKeyboard() {
+    auto state = bridge();
+    if (!usable(state) || !state->showKeyboard) return false;
+    try {
+        Jni j(state->vm);
+        j.env->CallStaticVoidMethod(state->type, state->showKeyboard);
+        j.check("HomeOverlay.showKeyboard");
+        return true;
+    } catch (const std::exception& e) { reportFailure(state, "showKeyboard", e.what()); }
+    catch (...) { reportFailure(state, "showKeyboard", "unknown C++ exception"); }
+    return false;
+}
+
+void hideHomeKeyboard() {
+    auto state = bridge();
+    if (!usable(state) || !state->hideKeyboard) return;
+    try {
+        Jni j(state->vm);
+        j.env->CallStaticVoidMethod(state->type, state->hideKeyboard);
+        j.check("HomeOverlay.hideKeyboard");
+    } catch (const std::exception& e) { reportFailure(state, "hideKeyboard", e.what()); }
+    catch (...) { reportFailure(state, "hideKeyboard", "unknown C++ exception"); }
 }
 
 HomeUiState homeUiState() {
@@ -674,6 +747,18 @@ float measureHomeText(std::string_view text, float size) {
     } catch (...) {
         return -1.f;
     }
+}
+
+float homeTextCaretOffset(float size) {
+    if (!std::isfinite(size) || size <= 0.f) return 0.f;
+    auto state = bridge();
+    if (!usable(state) || !state->caretOffset) return 0.f;
+    try {
+        Jni j(state->vm);
+        float offset = j.env->CallStaticFloatMethod(state->type, state->caretOffset, static_cast<jfloat>(size));
+        if (j.env->ExceptionCheck()) { j.env->ExceptionClear(); return 0.f; }
+        return std::isfinite(offset) ? offset : 0.f;
+    } catch (...) { return 0.f; }
 }
 
 // 发起加入：域名解析与 Intent 组装都在伴生 DEX 里完成，这里只投递参数。

@@ -16,6 +16,7 @@
 #include "common/Endpoint.h"
 #include "AddressParser.h"
 #include "TextEdit.h"
+#include "NativeTextInput.h"
 #include "LatencyProbe.h"
 #include "common/UdpProbeProtocol.h"
 #include "ServerStore.h"
@@ -128,6 +129,19 @@ std::string             gFormId;
 int                     gFormActive{0};
 bool                    gFormEditing{false};
 std::array<TextEdit,2> gEditors;
+std::uint64_t gTextSession{};
+std::atomic<HWND> gGameWindow{};
+int gNativeField{-1};
+int gNativeLastField{-1};
+RECT gNativeLastBox{};
+std::atomic<int> gPendingNativeField{-1};
+std::string gNativePreview;
+int         gNativePreviewField{-1};
+int         gNativePreviewCaret{};
+int         gNativePreviewAnchor{};
+bool        gNativePreviewValid{};
+std::size_t gNativePreviewView{};
+std::atomic<bool> gNativeKeyRelease{};
 std::string gFormError;
 Clock::time_point gCaretAt=Clock::now();
 float gGuiScale=1.0f;
@@ -402,6 +416,72 @@ void drawListPage(MinecraftUIRenderContext& ctx,Font& font,float sw,float sh,flo
  drawText(ctx,font,{panel.x0+84,panel.y1-24,panel.x1-140,panel.y1-9},std::to_string(entries.size())+" 台服务器",color8(230,230,230),1);
  gCloseBtn={panel.x1-114,panel.y1-31,panel.x1-12,panel.y1-7};drawVanillaButton(ctx,font,gCloseBtn,"返回",mouseSeen&&gCloseBtn.contains(mx,my));
 }
+RECT nativeFieldBox(Rect const& box) {
+    POINT origin{};
+    ClientToScreen(gGameWindow, &origin);
+    return {origin.x + LONG(std::lround(box.x0 * gGuiScale)),
+            origin.y + LONG(std::lround(box.y0 * gGuiScale)),
+            origin.x + LONG(std::lround(box.x1 * gGuiScale)),
+            origin.y + LONG(std::lround(box.y1 * gGuiScale))};
+}
+
+// Call with gMutex held. All game drafts stay on the overlay side of the bridge.
+void activateNativeField(int field, int fontPixelHeight, int textInset) {
+    if (!gGameWindow || !IsWindow(gGameWindow) || field < 0 || field >= int(gFields.size())) return;
+    auto const& target = gFields[field];
+    if (target.rect.width() < 1) return;
+    if (openNativeTextInput(gGameWindow, nativeFieldBox(target.rect), *target.value,
+                            field == 0 ? 255 : 128, gTextSession, field, fontPixelHeight, textInset)) {
+        gNativePreviewValid = false;
+        gNativePreviewView = 0;
+        gNativeField = field;
+        gNativeLastField = -1;
+        gFormActive = field;
+    } else {
+        gFormError = "系统输入框未能启动，可使用 Ctrl+V 粘贴";
+    }
+}
+
+// 原生编辑期间的实时文本（含组字）只做显示预览，绝不写进 gDraft。
+void applyNativeTextPreviews() {
+    while (auto preview = takeNativeTextPreview()) {
+        std::lock_guard lock(gMutex);
+        if (!gOpen || gPage != Page::Form || !nativeTextInputActive()
+            || preview->field != gNativeField || preview->field < 0 || preview->field > 1
+            || preview->session != gTextSession) {
+            continue;
+        }
+        if (!gNativePreviewValid || gNativePreview != preview->text
+            || gNativePreviewCaret != preview->caret || gNativePreviewAnchor != preview->anchor)
+            gCaretAt = Clock::now();
+        gNativePreview       = std::move(preview->text);
+        gNativePreviewField  = preview->field;
+        gNativePreviewCaret  = preview->caret;
+        gNativePreviewAnchor = preview->anchor;
+        gNativePreviewValid  = true;
+    }
+}
+
+void applyNativeTextResults() {
+    while (auto result = takeNativeTextInput()) {
+        std::lock_guard lock(gMutex);
+        gNativeKeyRelease = true;
+        if (!gOpen || gPage != Page::Form || result->session != gTextSession
+            || result->field < 0 || result->field > 1) continue;
+        auto& value = result->field == 0 ? gDraft.address : gDraft.name;
+        value = std::move(result->text);
+        gEditors[result->field].end(value);
+        gNativePreviewValid = false;
+        gNativePreview.clear();
+        gNativePreviewField = -1;
+        gFormError.clear();
+        gCaretAt = Clock::now();
+        gNativeField = -1;
+        gNativeLastField = -1;
+        if (result->action == NativeTextAction::Tab) gPendingNativeField = (result->field + 1) % 2;
+    }
+}
+
 void drawFormPage(MinecraftUIRenderContext& ctx,Font& font,float sw,float sh,float mx,float my,bool mouseSeen){
  std::lock_guard lock(gMutex);
  float w=std::min(530.f,sw-32),h=std::min(310.f,sh-30);
@@ -412,21 +492,46 @@ void drawFormPage(MinecraftUIRenderContext& ctx,Font& font,float sw,float sh,flo
  for(std::size_t i=0;i<gFields.size();++i){
   auto& field=gFields[i];float y=panel.y0+54+i*72.f;drawText(ctx,font,{panel.x0+16,y,panel.x1-16,y+12},field.label,color8(240,240,240),1);
   Rect box{panel.x0+16,y+18,panel.x1-16,y+48};field.rect=box;
+   if (gNativeField == int(i) && nativeTextInputActive()) {
+       RECT const nativeBox = nativeFieldBox(box);
+       if (gNativeLastField != int(i) || !EqualRect(&gNativeLastBox, &nativeBox)) {
+           gNativeLastField = int(i);
+           gNativeLastBox   = nativeBox;
+           positionNativeTextInput(nativeBox);
+       }
+   }
   fillRect(ctx,box,color8(22,22,22),.94f);border(ctx,box,gFormActive==int(i)?color8(169,218,142):color8(132,132,132));
-  auto& edit=gEditors[i];auto const& value=*field.value;edit.clamp(value);
+  bool const previewing=gNativePreviewValid&&gNativePreviewField==int(i)&&nativeTextInputActive();
+  TextEdit previewEdit;
+  if(previewing){
+   previewEdit.caret=std::size_t(std::max(0,gNativePreviewCaret));
+   previewEdit.anchor=std::size_t(std::max(0,gNativePreviewAnchor));
+   previewEdit.view=gNativePreviewView;
+  }
+  auto& edit=previewing?previewEdit:gEditors[i];
+  auto const& value=previewing?gNativePreview:*field.value;edit.clamp(value);
   float available=box.width()-20;
+  float ty=box.y0+(box.height()-font.getWrapHeight())/2;
   if(edit.view>edit.caret)edit.view=edit.caret;
   while(edit.view<edit.caret&&textWidth(font,std::string_view(value).substr(edit.view,edit.caret-edit.view))>available-3)edit.view=TextEdit::next(value,edit.view);
   while(edit.view&&textWidth(font,std::string_view(value).substr(TextEdit::prev(value,edit.view),edit.caret-TextEdit::prev(value,edit.view)))<available-15)edit.view=TextEdit::prev(value,edit.view);
   auto tail=value.substr(edit.view);while(!tail.empty()&&textWidth(font,tail)>available)tail.resize(TextEdit::prev(tail,tail.size()));
-  float ty=box.y0+(box.height()-font.getWrapHeight())/2;
   auto a=std::max(edit.view,std::min(edit.caret,edit.anchor)),b=std::min(edit.view+tail.size(),std::max(edit.caret,edit.anchor));
   if(gFormActive==int(i)&&b>a){float x0=box.x0+9+textWidth(font,std::string_view(value).substr(edit.view,a-edit.view)),x1=box.x0+9+textWidth(font,std::string_view(value).substr(edit.view,b-edit.view));fillRect(ctx,{x0,ty-1,x1,ty+font.getWrapHeight()+1},color8(70,113,142),1);}
   if(value.empty())drawText(ctx,font,{box.x0+9,ty,box.x1-9,box.y1},i==0?"例如 play.example.com:19132":"可选，留空使用服务器名称",color8(168,168,168),1);
   else drawText(ctx,font,{box.x0+9,ty,box.x1-9,box.y1},tail,color8(255,255,255),1);
-  if(gFormActive==int(i)&&gInputForeground&&std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-gCaretAt).count()%1000<500){float x=box.x0+9+textWidth(font,std::string_view(value).substr(edit.view,edit.caret-edit.view));fillRect(ctx,{x,ty-1,x+1,ty+font.getWrapHeight()+1},color8(255,255,255),1);}
+  if(gFormActive==int(i)&&(gInputForeground||nativeTextInputActive())&&std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-gCaretAt).count()%1000<500){float x=box.x0+9+textWidth(font,std::string_view(value).substr(edit.view,edit.caret-edit.view));fillRect(ctx,{x,ty-1,x+1,ty+font.getWrapHeight()+1},color8(255,255,255),1);}
+  if(previewing)gNativePreviewView=edit.view;
  }
- drawText(ctx,font,{panel.x0+16,panel.y1-96,panel.x1-16,panel.y1-76},gFormError.empty()?"保存后自动获取图文 · Tab 切换 · Ctrl+V 粘贴":gFormError,gFormError.empty()?color8(222,222,222):color8(255,154,140),1);
+ if (gPendingNativeField >= 0 && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+     && !(GetAsyncKeyState(VK_TAB) & 0x8000) && !(GetAsyncKeyState(VK_RETURN) & 0x8000)
+     && !(GetAsyncKeyState(VK_ESCAPE) & 0x8000)) {
+     int const field = gPendingNativeField;
+     gPendingNativeField = -1;
+     activateNativeField(field, static_cast<int>(std::lround(font.getWrapHeight() * gGuiScale)),
+                         static_cast<int>(std::lround(9.0f * gGuiScale)));
+ }
+ drawText(ctx,font,{panel.x0+16,panel.y1-96,panel.x1-16,panel.y1-76},gFormError.empty()?"点击输入框使用中文输入法 · Enter 结束编辑":gFormError,gFormError.empty()?color8(222,222,222):color8(255,154,140),1);
  float by=panel.y1-43;
  gDeleteBtn=gFormEditing?Rect{panel.x0+16,by,panel.x0+108,by+26}:Rect{};
  if(gFormEditing)drawVanillaButton(ctx,font,gDeleteBtn,"删除服务器",mouseSeen&&gDeleteBtn.contains(mx,my));
@@ -527,13 +632,18 @@ void pollKeyboard(){
  std::array<bool,256> down{},edge{};
  for(int i=0;i<256;++i){down[i]=(GetAsyncKeyState(i)&0x8000)!=0;edge[i]=down[i]&&!gKeyPrev[i];}gKeyPrev=down;
  bool resumed=foreground&&!gInputForeground;gInputForeground=foreground;
+ if (nativeTextInputActive() || gPendingNativeField >= 0) { gNativeKeyRelease = true; return; }
+ if (gNativeKeyRelease) {
+   if (!down[VK_RETURN] && !down[VK_ESCAPE] && !down[VK_TAB]) gNativeKeyRelease = false;
+   return;
+ }
  if(!foreground||resumed)return;
  std::lock_guard lock(gMutex);if(!gOpen)return;
  if(down[VK_MENU]||down[VK_LWIN]||down[VK_RWIN]){gKeyRepeatAt={};return;}
  if(edge[VK_ESCAPE]){gEscSuppressMs.store(steadyMs()+250);if(gPage==Page::List)gOpen=false;else gPage=Page::List;return;}
  if(gPage!=Page::Form)return;
  bool ctrl=down[VK_CONTROL],shift=down[VK_SHIFT];
- if(edge[VK_TAB]){gFormActive=(gFormActive+1)%2;gCaretAt=Clock::now();return;}
+ if(edge[VK_TAB]){gFormActive=(gFormActive+1)%2;gCaretAt=Clock::now();gPendingNativeField=gFormActive;return;}
  if(edge[VK_RETURN]&&!ctrl){saveDraft();return;}
  auto& edit=gEditors[gFormActive];auto& value=gFormActive==0?gDraft.address:gDraft.name;edit.clamp(value);
  if(ctrl){
@@ -567,7 +677,7 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     // AfterUIRenderEvent fires for EACH ScreenView, not once per frame. Drawing
     // again on toast/debug was the source of duplicated dark overlay layers.
     if (view.getScreenName() != "start_screen") {
-        if(Clock::now()-gLastMenuFrame>std::chrono::milliseconds(250)){endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();}
+        if(Clock::now()-gLastMenuFrame>std::chrono::milliseconds(250)){if(nativeTextInputActive())closeNativeTextInput();endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();}
         return;
     }
     auto ci = ll::service::bedrock::getClientInstance();
@@ -604,7 +714,8 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
             gButtonValid=false; gPanelValid=false; gRows.clear();
         }
     }
-    if (!allowed) {endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();return;}
+    if (!allowed) {if(nativeTextInputActive())closeNativeTextInput();endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();return;}
+    applyNativeTextPreviews();
     beginImageFrame();
     FontHandle handle = ci->getFontHandle();
     auto font=handle.mDefaultFont;
@@ -635,8 +746,9 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
         page      = gPage;
     }
 
+    applyNativeTextResults();
     pollKeyboard();
-    {std::lock_guard lock(gMutex);open=gOpen;page=gPage;}
+    {std::lock_guard lock(gMutex);open=gOpen;page=gPage;if(!open||page!=Page::Form)gPendingNativeField=-1;}
 
     // 180ms 淡入淡出：按真实帧间隔推进，再用 smoothstep 让起止都不生硬。
     auto const nowTick = Clock::now();
@@ -704,6 +816,7 @@ void startAddForm() {
     gFormId      = {};
     gFormActive  = 0;
     gFormEditing = false;
+    ++gTextSession; gNativeField = -1;
     gFormError.clear();gEditors={};gCaretAt=Clock::now();
     rebuildFields();
     gPage = Page::Form;
@@ -771,6 +884,10 @@ bool queryCursorClient(int& outX, int& outY) {
     if (std::wstring_view(title).find(L"Minecraft") == std::wstring_view::npos) {
         return false;
     }
+    DWORD ownerPid{};
+    GetWindowThreadProcessId(hwnd, &ownerPid);
+    if (ownerPid != GetCurrentProcessId()) return false;
+    gGameWindow = hwnd;
     POINT pt{};
     if (!GetCursorPos(&pt) || !ScreenToClient(hwnd, &pt)) {
         return false;
@@ -784,6 +901,16 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     int  cursorX = 0;
     int  cursorY = 0;
     bool haveCursor = queryCursorClient(cursorX, cursorY);
+    if (nativeTextInputActive()) {
+        // Raw mouse motion/up can still reach the game after the EDIT takes focus.
+        // Only an actual background left press may commit before a Save/field click.
+        if (!haveCursor || int(event.actionButtonId()) != 1 || int(event.buttonData()) != 1) {
+            event.cancel();
+            return;
+        }
+        commitNativeTextInput();
+    }
+    applyNativeTextResults();
 
     static std::atomic<int> sMouseLogs{0};
     int  rawAction = static_cast<int>(event.actionButtonId());
@@ -964,6 +1091,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
                 gFormId      = srv->id;
                 gFormActive  = 0;
                 gFormEditing = true;
+                ++gTextSession; gNativeField = -1;
                 gPage        = Page::Form;
                 return;
             }
@@ -1007,12 +1135,8 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
         if (fields[i].rect.contains(uiX, uiY)) {
             std::lock_guard lock(gMutex);
             gFormActive = static_cast<int>(i);
-            auto& edit=gEditors[i];auto const& text=*fields[i].value;edit.clamp(text);
-            auto ci=ll::service::bedrock::getClientInstance();auto handle=ci->getFontHandle();auto font=handle.mDefaultFont;
-            if(font){std::size_t pos=edit.view;float target=uiX-fields[i].rect.x0-9;
-                while(pos<text.size()){auto next=TextEdit::next(text,pos);float left=font->getLineLength(std::string_view(text).substr(edit.view,pos-edit.view),1,false),right=font->getLineLength(std::string_view(text).substr(edit.view,next-edit.view),1,false);if(target<(left+right)/2)break;pos=next;}
-                edit.caret=edit.anchor=pos;
-            }gCaretAt=Clock::now();
+            gPendingNativeField = gFormActive;
+            gCaretAt=Clock::now();
             return;
         }
     }
@@ -1043,6 +1167,7 @@ void registerProbeOverlay() {
     if (!gKeyListener) {
         gKeyListener = bus.emplaceListener<ll::event::input::KeyInputEvent>(
             [](ll::event::input::KeyInputEvent& event) {
+                if (nativeTextInputActive()) { event.cancel(); return; }
                 if (!event.isDown() || event.keyCode() != VK_ESCAPE) return;
                 bool openNow = false;
                 {
@@ -1058,6 +1183,7 @@ void registerProbeOverlay() {
 }
 
 void unregisterProbeOverlay() {
+    shutdownNativeTextInput();
     {std::lock_guard lock(gMutex);gOpen=false;gVisible=false;gButtonValid=false;gPanelValid=false;gRows.clear();gJoinBtn={};gJoinQueued=false;gSelectedId.clear();}
     auto& bus = ll::event::EventBus::getInstance();
     if (gRenderListener) {

@@ -128,12 +128,25 @@ xmake -P . -y
 - 客户端最低运行版本 LL26.60.8；客户端与服务端 DLL **不可混用**，最低版本门禁不代表未来游戏 ABI 已验证。
 - Android 打包：`scripts/package-android.ps1 -SdkRoot <SDK> -NdkHome <SDK>/ndk/28.2.13676358`。要求 CMake ≥3.24、Ninja、Git、JDK 17、NDK **28.2.13676358**（NDK 30 产出的库会因启动器 libc++ 缺 `__hash_memory` 实机加载失败），默认仅 arm64-v8a / API 28+，产物在 `dist/android/`。Preloader SDK 锁定 LeviLauncher Android v1.6.0 提交 `5d108da350ce3e7f13f51415f81e65344ecd5d14`，模板的旧 0.2.2 结构体不兼容。
 
+### Android ADB 调试（按官方流程）
+
+权威入口：[你的第一个 Android 原生模组](https://levimc.org/zh-Hans/tutorials/develop/first-android-mod/)（2026-11-18 核对）。自动化调试优先使用启动器导出的 `IntentHandler` 直接导入，不走文件管理器或文件选择器。以下 ADB 命令已在本机 Launcher 1.6.0 上完成导入及覆盖提示验证；SDK 与 NDK 版本仍以本项目锁定值为准。
+
+1. 先用 `adb devices -l` 确认设备处于 `device` 状态；有多个设备时每条命令都加 `-s <serial>`。本机 adb 为 `$env:LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe`；历史测试设备为 `fd78be38`，每次重新检查连接，不假定序列号永远可用。
+2. 在仓库根执行 `./scripts/package-android.ps1`，检查主机 CTest、DEX 编译、ARM64 ELF 与依赖校验均通过；程序包为 `dist/android/ServerListEnhancer-1.0.0-arm64-v8a.levipack`。
+3. 退出当前游戏后，执行 `adb -s <serial> push dist/android/ServerListEnhancer-1.0.0-arm64-v8a.levipack /sdcard/Download/sle-android-test.zip`，再执行 `adb -s <serial> shell am start -W -n org.levimc.launcher/.ui.activities.IntentHandler -a android.intent.action.VIEW -d 'content://com.android.externalstorage.documents/document/primary%3ADownload%2Fsle-android-test.zip' -t application/zip`。手机端 `.zip` 只是同一 `.levipack` 内容的调试传输名称，发布产物仍为 `.levipack`。**不要加 `-f 1`**：shell UID 不拥有 DocumentsProvider URI 的转授权权利，已实测会报 `SecurityException: UID 2000 does not have permission`；启动器本身的存储权限已足够读取该 URI。
+4. `am start` 的 `Status: ok` 只证明 Intent 已打开，不代表导入完成。用 `adb shell uiautomator dump /sdcard/Download/sle-android-ui.xml` 并 `adb pull` 读取 UI 结构，只确认标题为“导入模组”，以及正文明确含 `ServerListEnhancer` 的“文件已存在/覆盖”提示；确认按钮为 `org.levimc.launcher:id/btn_positive`，点击位置必须由当次 `bounds` 计算。再核对当前实例、模组启用状态和导入结果，然后从启动器启动该实例，确保加载 Preloader。不要打开文件管理器逐步导入，不直接覆盖私有实例目录，不把直接启动原版 Minecraft 当作模组验证；保留已有 `servers.json` 和配置。本机启动器包名为 `org.levimc.launcher`、测试实例为 `Minecraft_1.26.62.1`，每次以当前 UI 为准。
+5. 官方日志方式为 `adb logcat | Select-String "<模组名>"`。自动化检查优先用有界快照 `adb -s <serial> logcat -d -v time | Select-String "ServerListEnhancer|server_list_enhancer|AndroidRuntime|linker"`，按本次启动时间核对加载成功与错误，避免把旧日志当成新结果。需要持续日志时使用可回收的后台作业，结束后收集或停止。
+6. 界面证据可用 `adb -s <serial> shell screencap -p /sdcard/Download/sle-debug.png`，再 `adb -s <serial> pull /sdcard/Download/sle-debug.png scratch/`。测试点击前先读取当前截图；不要复用上次屏幕的坐标。IME 验证要实际唤起中文键盘、输入拼音并点击候选词；`adb shell input text` 或直接注入 Unicode 只能证明字符通路，不能证明组合输入。可用 `adb shell dumpsys input_method` 检查当前焦点与 `InputConnection`。
+7. 发布版启动器通常不支持 `run-as`，设备也不保证有 `su`；遇到这一状态回到官方导入流程，不以 root 或私有目录可写作为调试前提。调试素材放 `scratch/` 或 `build/`，只清理本次明确创建的临时条目；用取消表单等方式尽量不改用户已有服务器数据。
+
 ### 验证
 
 测试没有统一 runner，必须按名调用：
 
-- Windows/公共：`tests/Run-Regression.cmd`、`tests/image_pipeline_test.cpp`、`tests/status_queue_test.cpp`、`tests/vanilla_ui_test.cpp`、`tests/gif_test.cpp`、`tests/input_model_test.cpp`、`tests/ll_version_test.cpp`、`tests/udp_probe_test.cpp`。
-- Android：`tests/Run-Android-Interaction.ps1`（协议与按压状态 CTest + Java 入口回归）、`tests/android_touch_test.cpp`、`tests/android_model_test.cpp`、`tests/HomeEntryInteractionTest.java`。
+- Windows/公共：`tests/Run-Regression.cmd`、`tests/native_text_input_test.cpp`、`tests/image_pipeline_test.cpp`、`tests/status_queue_test.cpp`、`tests/vanilla_ui_test.cpp`、`tests/gif_test.cpp`、`tests/input_model_test.cpp`、`tests/ll_version_test.cpp`、`tests/udp_probe_test.cpp`。
+- Android：`tests/Run-Android-Interaction.ps1`（协议、按压状态与 IME 三个 CTest + Java 入口回归）、`tests/android_touch_test.cpp`、`tests/android_model_test.cpp`、`tests/android_ime_test.cpp`、`tests/HomeEntryInteractionTest.java`。
+- Windows 原生 EDIT 主机测试先把进程工作目录切到 `build/native-ime-runtime` 并切换英语键盘布局，再创建控件；不要从项目根运行会触发第三方中文输入法的裸 UI 探针。搜狗输入法曾在根目录生成 `user.config`、`sgim_*.bin` 及乱码前缀文件，历史测试产物已归档至构建目录。真实中文选词用游戏实例验证。
 - 辅助脚本：`tests/Inspect-ClientUi.ps1`、`tests/Compare-VanillaButtons.ps1`、`tests/generate-gif-fixtures.cjs`、`tests/run-dev-server.cjs`、`tests/server_join_live.cjs`。
 
 ### 打包与升级

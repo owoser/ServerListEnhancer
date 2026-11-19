@@ -14,6 +14,10 @@ clang-cl /nologo /std:c++20 /EHsc /utf-8 /Isrc tests/input_model_test.cpp /Febui
 if errorlevel 1 exit /b 1
 build\input_model_test.exe
 if errorlevel 1 exit /b 1
+clang-cl /nologo /std:c++20 /EHsc /utf-8 /DNOMINMAX /Isrc tests/native_text_input_test.cpp src-client/NativeTextInput.cpp /Febuild/native_text_input_test.exe /Fobuild/ user32.lib gdi32.lib imm32.lib ole32.lib
+if errorlevel 1 exit /b 1
+build\native_text_input_test.exe
+if errorlevel 1 exit /b 1
 clang-cl /nologo /std:c++20 /EHsc /utf-8 /Isrc tests/vanilla_ui_test.cpp /Febuild/vanilla_ui_test.exe /Fobuild/vanilla_ui_test.obj
 if errorlevel 1 exit /b 1
 build\vanilla_ui_test.exe

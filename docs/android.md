@@ -29,7 +29,7 @@ Windows xmake 的双端构建不变。Android 依赖下载及临时目录全部�
 
 每行右侧依次显示玩家数、UDP 延迟和版本：延迟按 41 ms / `1000+ ms` / `UDP 查询中` / `UDP 未响应` / `地址无效` 展示，≤60 ms 绿、≤100 ms 黄、更高红。探测端口优先用服务器 `/v1/join` 通告的 `server_list_enhancer.udpProbePort`，其次配置项 `udpProbePort`（0 表示直接用游戏端口）；结果缓存 15 秒，翻页或关闭列表时暂停。
 
-列表行与资料横幅支持 GIF 动画：模组按 Windows 版同一套规则解码多帧（源文件 ≤2 MiB、帧数 ≤120、画布 ≤1024、单循环 ≤30 秒、缺省延时 100 ms、无循环扩展只播一次），逐帧注册为独立图片并按时间切换；超限或解码失败回退静态首帧。软键盘弹出时会把可用高度上报给原生侧，表单与底部按钮整体排到键盘之上。输入框获得焦点时显示闪烁光标（约 500 ms 一次），位置取 Java `Paint.measureText` 对同一字号、同一字体的实测字宽，因此紧贴最后一个字符，长文本会被夹在输入框内；取不到实测值时回退旧估算。所有按钮文案在按钮内水平居中，右侧玩家数、UDP 时延与版本三列同样按实测字宽右对齐。截图等系统浮层造成的短暂失焦不会关闭列表，真正切到后台超过约 1.2 秒才关闭。首页判定依赖画面标记，因此换成会遮蔽该控件的极高不透明度覆盖层或大幅修改 UI 的主题时，入口可能不再响应；这是刻意的保守策略，宁可点不动也不误开列表。当前适配使用按键 Unicode 输入；完整中文 IME 流程尚未接入或验证。点击条目只切换选中并展示已有图片与文案，不会重新查询服务器；资料查询由“刷新”按钮发起，另有三种自动发起：启动时、每次打开列表时（全部未在查询中的服务器）以及新增/编辑保存后的首次填充，均受配置项 autoRefresh 控制。选中条目后，列表与详情之间出现绿色“加入游戏”按钮：未选中时按钮为暗色且不可点击，选中后变亮；点击后通过启动器的 `minecraft://connect/?serverUrl=<地址>&serverPort=<端口>` 深链交给游戏本身连接，因此仍走原版确认与资源包流程。列表与表单的打开、关闭是与 Windows 一致的约 180 ms 淡入淡出；关闭时立即不再接收触摸，只是视觉上多画约 180 ms。
+列表行与资料横幅支持 GIF 动画：模组按 Windows 版同一套规则解码多帧（源文件 ≤2 MiB、帧数 ≤120、画布 ≤1024、单循环 ≤30 秒、缺省延时 100 ms、无循环扩展只播一次），逐帧注册为独立图片并按时间切换；超限或解码失败回退静态首帧。软键盘弹出时会把可用高度上报给原生侧，表单与底部按钮整体排到键盘之上。输入框获得焦点时显示闪烁光标（约 500 ms 一次），位置取 Java `Paint.measureText` 对同一字号、同一字体的实测字宽，因此紧贴最后一个字符，长文本会被夹在输入框内；取不到实测值时回退旧估算。所有按钮文案在按钮内水平居中，右侧玩家数、UDP 时延与版本三列同样按实测字宽右对齐。截图等系统浮层造成的短暂失焦不会关闭列表，真正切到后台超过约 1.2 秒才关闭。首页判定依赖画面标记，因此换成会遮蔽该控件的极高不透明度覆盖层或大幅修改 UI 的主题时，入口可能不再响应；这是刻意的保守策略，宁可点不动也不误开列表。输入框通过自有 View 的 InputConnection 接入系统中文输入法：拼音组字保留在输入法侧，选择候选词后整段提交到当前字段；切换字段或关闭表单会使旧输入连接失效。添加与编辑均为地址在上、名称在下，进入表单先聚焦地址。名称和地址的绘制、字宽测量与光标高度共用 16 个设计单位字号，避免中文后光标出现额外空隙；光标垂直位置使用同一 Paint 的 ascent/descent 对齐文字基线。点击条目只切换选中并展示已有图片与文案，不会重新查询服务器；资料查询由“刷新”按钮发起，另有三种自动发起：启动时、每次打开列表时（全部未在查询中的服务器）以及新增/编辑保存后的首次填充，均受配置项 autoRefresh 控制。选中条目后，列表与详情之间出现绿色“加入游戏”按钮：未选中时按钮为暗色且不可点击，选中后变亮；点击后通过启动器的 `minecraft://connect/?serverUrl=<地址>&serverPort=<端口>` 深链交给游戏本身连接，因此仍走原版确认与资源包流程。列表与表单的打开、关闭是与 Windows 一致的约 180 ms 淡入淡出；关闭时立即不再接收触摸，只是视觉上多画约 180 ms。
 
 **Android 不做自动返回首页**：退出世界后停在原版世界列表，由玩家自己按一次返回。
 
@@ -47,7 +47,7 @@ Windows xmake 的双端构建不变。Android 依赖下载及临时目录全部�
 
 脚本优先查找 build/android-sdk/ndk/28.2.13676358，再查系统 SDK 的同版本；也接受 -NdkHome 或 ANDROID_NDK_HOME 显式指定。不会自动选取更高版本 NDK。主机默认使用 PATH 的 g++；Visual Studio 环境可用 -HostCompiler cl。缺失工具或编译失败立即终止。
 
-完成主机构建后可运行 `./tests/Run-Android-Interaction.ps1`：执行协议与按压状态两个 CTest，以及 33 项 Java 入口回归，覆盖分数 GUI 标度、Surface 与窗口偏移、噪声标记、旧比例命中区拒绝、拖动、取消及多指手势，并核对资源包定位块和版本。2026-11-18 已通过上述测试、NDK 28.2 打包与 ELF 校验，真机确认入口来自实际渲染边界；用户随后确认安卓测试无问题。
+完成主机构建后可运行 `./tests/Run-Android-Interaction.ps1`：执行协议、按压状态和 IME 提交三个 CTest，以及 33 项 Java 入口回归；IME 测试覆盖中文提交、UTF-8 字节预算和选区替换，其余回归覆盖分数 GUI 标度、Surface 与窗口偏移、噪声标记、旧比例命中区拒绝、拖动、取消及多指手势，并核对资源包定位块和版本。2026-11-18 已通过上述测试、NDK 28.2 打包与 ELF 校验，真机确认入口来自实际渲染边界；用户随后确认安卓测试无问题。2026-11-19 已在真机用中文键盘输入 `zhongwen` 并点击候选词“中文”，确认只提交一次；名称光标的字宽与字号一致，垂直位置按字体基线修正，添加/编辑表单均为地址在上、名称在下。
 
 Preloader SDK 锁定 LeviLauncher Android v1.6.0 实际绑定的提交 5d108da350ce3e7f13f51415f81e65344ecd5d14。教程模板的旧 0.2.2 结构体与 1.6.0 不兼容，实机会在 registerModule 读取回调时崩溃，因此不能用“导出函数名相同”证明 C++ ABI 兼容。采用官方模板默认的 Preloader 链接方式：从锁定源码构建运行库作为链接输入，让本模组记录 libpreloader.so 的 DT_NEEDED 依赖，并在链接阶段检查 API 符号。安装包仍只包含本模组的 .so，不分发、替换启动器的 libpreloader.so 或 libc++_shared.so。构建会检查 ARM64 ELF、PLGetModRegistration 导出、16 KiB LOAD 对齐、动态依赖和已知不兼容的 C++ 符号；仍需实机验证加载。
 
@@ -57,6 +57,15 @@ Preloader SDK 锁定 LeviLauncher Android v1.6.0 实际绑定的提交 5d108da35
 2. 在 LeviLauncher Android 当前 Minecraft 实例的“模组”页面添加该文件，启用模组。
 3. 清单声明 Minecraft 1.26.60 与 1.26.62 系列；在匹配实例启动后，从 Mod Menu 检查模块，返回游戏首页检查“社交”左侧的“服务器”按钮。打开列表、进入设置/游戏列表或世界内时入口应消失。
 4. 使用 adb logcat -s ServerListEnhancer 查看加载日志；添加一条测试服务器并重启检查列表保留。
+
+开发调试使用启动器的 ADB 导入入口，无需打开文件管理器。先退出游戏，再执行：
+
+~~~powershell
+adb -s <serial> push dist/android/ServerListEnhancer-1.0.0-arm64-v8a.levipack /sdcard/Download/sle-android-test.zip
+adb -s <serial> shell am start -W -n org.levimc.launcher/.ui.activities.IntentHandler -a android.intent.action.VIEW -d 'content://com.android.externalstorage.documents/document/primary%3ADownload%2Fsle-android-test.zip' -t application/zip
+~~~
+
+手机端 `.zip` 只是同一包内容的调试名称。不要添加 `-f 1`；shell 无权为该 DocumentsProvider URI 转授权限，启动器使用自身已有的存储权限读取。`Status: ok` 只证明 Intent 已启动，还须确认本模组的导入与覆盖提示、核对实例并从启动器重新启动游戏。自动确认和本次启动日志检查规则见 [AGENTS.md](../AGENTS.md)。
 
 包的唯一顶层目录是 server_list_enhancer，包含 manifest.json、libserver_list_enhancer.so、ui.dex、config/ 和资源/说明。不要把 Windows DLL 改扩展名后导入；更新时保留现有 servers.json 与用户配置。本模组注册的输入回调无法注销，因此将自身固定到游戏进程生命周期，更新和彻底禁用请退出游戏。当前构建仅绑定并验证启动器 1.6.0，其他版本应先核对 SDK 结构体 ABI。
 

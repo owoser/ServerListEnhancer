@@ -3,6 +3,7 @@
 #include "Discovery.h"
 #include "GifAnimation.h"
 #include "HomeUi.h"
+#include "ImeCommit.h"
 #include "LatencyProbe.h"
 #include "ServerStore.h"
 #include "TextEdit.h"
@@ -139,7 +140,7 @@ class AndroidMod {
     std::mutex joinMutex;
     std::string joinNotice;
     bool joinNoticePending{};
-    bool inputRegistered{},touchRegistered{},moduleEnabled{true},open{},form{},confirm{},plainHttp{true},autoRefresh{true},autoRefreshPending{};
+    bool inputRegistered{},touchRegistered{},textInputRegistered{},moduleEnabled{true},open{},form{},confirm{},plainHttp{true},autoRefresh{true},autoRefreshPending{};
     bool logoReady{},bannerReady{};
     int logoWidth{64},logoHeight{64},bannerWidth{960},bannerHeight{320};
     float scale{1},viewWidth{800},viewHeight{480};
@@ -397,7 +398,7 @@ class AndroidMod {
         if(joining.exchange(false))cancelServerJoin();
         bool wasOpen=open;open=form=confirm=false;press.cancel();hits.clear();
         // 关闭时释放逐帧 Bitmap，重新打开后由探测流程重新注册。
-        if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimations();clearRowImages();latencyProbe.pause();pl::input::hideKeyboard();}
+        if(wasOpen){clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimations();clearRowImages();latencyProbe.pause();closeKeyboard();}
     }
     void openFromHome() {
         if(!active)return;auto state=homeUiState();
@@ -530,7 +531,7 @@ class AndroidMod {
     }
     void newForm(const std::string& id) {
         editId=id;name.clear();address.clear();if(auto s=ServerStore::getInstance().get(id)){name=s->name;address=client::displayAddress(s->address,s->port);}
-        nameEdit.end(name);addressEdit.end(address);form=true;confirm=false;focus=1;notice.clear();pl::input::showKeyboard();
+        nameEdit.end(name);addressEdit.end(address);form=true;confirm=false;focus=1;notice.clear();openKeyboard();
     }
     void save() {
         auto parsed=client::parseServerAddress(address);if(!parsed){notice=parsed.error;return;}
@@ -545,7 +546,7 @@ class AndroidMod {
         if(id.empty()||!store.save()){notice="保存失败，请检查存储空间";return;}
         if(wasSelected)selected=id;else if(editId.empty())clearSelection();
         logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);clearRowAnimation(id);clearRowImage("sle.row."+id);
-        form=false;notice="已保存";pl::input::hideKeyboard();enqueue(*store.get(id));
+        form=false;notice="已保存";closeKeyboard();enqueue(*store.get(id));
     }
     void act(const Hit& hit) {
         switch(hit.action) {
@@ -556,10 +557,10 @@ class AndroidMod {
         case 5:++page;clearSelection();latencyProbe.pause();releaseOffPageRowAnimations(std::max(1,static_cast<int>((viewHeight-245)/64)));break;
         case 6:selected=hit.id;logoReady=bannerReady=false;clearAnimation(logoAnimation);clearAnimation(bannerAnimation);if(auto s=ServerStore::getInstance().get(selected))enqueue(*s,true);break;
         case 7:save();break;
-        case 8:form=false;confirm=false;pl::input::hideKeyboard();break;
-        case 9:confirm=true;pl::input::hideKeyboard();break;
-        case 10:focus=0;nameEdit.end(name);pl::input::showKeyboard();break;
-        case 11:focus=1;addressEdit.end(address);pl::input::showKeyboard();break;
+        case 8:form=false;confirm=false;closeKeyboard();break;
+        case 9:confirm=true;closeKeyboard();break;
+        case 10:focus=0;nameEdit.end(name);openKeyboard();break;
+        case 11:focus=1;addressEdit.end(address);openKeyboard();break;
         case 15:{
             // 加入选中的服务器：仅在选中项仍有效且没有在途请求时发起，重复点击直接忽略。
             if(joining.load()){notice="正在加入，请稍候";break;}
@@ -581,18 +582,36 @@ class AndroidMod {
         else if(action==3||action==5||action==6)press.cancel();
         requestRepaint();return true;
     }
+    // Java InputConnection 送来的编辑键：构造等价 KeyEvent，复用同一条编辑路径。
+    bool editKey(int keyCode) {
+        pl::input::KeyEvent event{};event.keyCode=keyCode;event.isKeyDown=true;return key(event);
+    }
+    // 软键盘：优先使用覆盖层真正的 InputConnection；旧 DEX 不可用时退回 SDK 键盘。
+    void openKeyboard() { if(!showHomeKeyboard())pl::input::showKeyboard(); }
+    void closeKeyboard() { hideHomeKeyboard();pl::input::hideKeyboard(); }
     bool key(const pl::input::KeyEvent& event) {
         if(!active||!homeAllowed())return false;std::lock_guard lock(mutex);if(!moduleEnabled||!open)return false;
         if(!event.isKeyDown)return true;
-        if(event.keyCode==4){if(form){form=confirm=false;press.cancel();pl::input::hideKeyboard();}else dismiss();return true;}
+        if(event.keyCode==4){if(form){form=confirm=false;press.cancel();closeKeyboard();}else dismiss();return true;}
         if(!form||confirm)return true;
         auto& text=focus?address:name;auto& editor=focus?addressEdit:nameEdit;
         if(event.keyCode==67)editor.backspace(text);
+        else if(event.keyCode==112)editor.del(text);
         else if(event.keyCode==66)save();
         else if(event.keyCode==61){focus=1-focus;}
         else if(event.keyCode==21)editor.left(text,false);
         else if(event.keyCode==22)editor.right(text,false);
         else if(event.unicodeChar>=32&&event.unicodeChar<=0x10ffff)editor.insert(text,codepoint(event.unicodeChar),focus?255:128);
+        return true;
+    }
+    // IME 提交的整段文本（中文候选词）：插入当前焦点字段，并让调用方知道是否已消费。
+    bool text(const pl::input::TextInputEvent& event) {
+        if(!active||!homeAllowed())return false;std::lock_guard lock(mutex);if(!moduleEnabled||!open)return false;
+        if(!form||confirm||event.text.empty())return false;
+        auto& value=focus?address:name;auto& editor=focus?addressEdit:nameEdit;
+        ime::commit(editor,value,event.text,focus?255:128);
+        requestRepaint();
+        // 表单打开且文本非空即视为已消费：字段已满时也不能让 SDK 回退逐码点再插一次。
         return true;
     }
     void render() {
@@ -628,14 +647,17 @@ class AndroidMod {
                     else {
                         // 光标约 500ms 亮灭一次；只按已绘制文字的像素宽度定位，不参与布局。
                         const bool caretOn=(steadyMillis()/500)%2==0;
-                        text(x+20,112,"名称（可留空）",14);rect(x+20,135,520,38,focus==0?0xff486045:0xff454545);
-                        const std::string nameText=fit(name.empty()?"点击输入名称":name,28);text(x+30,142,nameText);
-                        if(focus==0&&caretOn)rect(std::min(x+30+(name.empty()?0.f:textWidth(nameText,28)),x+534),142,2,28,0xffffffff);
-                        hits.push_back({x+20,135,520,38,10,{}});
-                        text(x+20,185,"地址：域名/IP:端口，默认 19132",14);rect(x+20,209,520,38,focus==1?0xff486045:0xff454545);
-                        const std::string addressText=fit(address.empty()?"点击输入 play.example.com:19132":address,40);text(x+30,216,addressText,16);
-                        if(focus==1&&caretOn)rect(std::min(x+30+(address.empty()?0.f:textWidth(addressText,16)),x+534),216,2,16,0xffffffff);
-                        hits.push_back({x+20,209,520,38,11,{}});
+                        constexpr float fieldTextSize=16.f;
+                        static const float caretTopOffset=homeTextCaretOffset(fieldTextSize);
+                        // 与 Windows 表单同序：地址在上、名称在下；进入表单先聚焦地址。
+                        text(x+20,112,"地址：域名/IP:端口，默认 19132",14);rect(x+20,135,520,38,focus==1?0xff486045:0xff454545);
+                        const std::string addressText=fit(address.empty()?"点击输入 play.example.com:19132":address,40);text(x+30,142,addressText,fieldTextSize);
+                        if(focus==1&&caretOn)rect(std::min(x+30+(address.empty()?0.f:textWidth(addressText,fieldTextSize)),x+534),142+caretTopOffset,2,fieldTextSize,0xffffffff);
+                        hits.push_back({x+20,135,520,38,11,{}});
+                        text(x+20,185,"名称（可留空）",14);rect(x+20,209,520,38,focus==0?0xff486045:0xff454545);
+                        const std::string nameText=fit(name.empty()?"点击输入名称":name,28);text(x+30,216,nameText,fieldTextSize);
+                        if(focus==0&&caretOn)rect(std::min(x+30+(name.empty()?0.f:textWidth(nameText,fieldTextSize)),x+534),216+caretTopOffset,2,fieldTextSize,0xffffffff);
+                        hits.push_back({x+20,209,520,38,10,{}});
                         button(x+20,275,120,"保存",7);button(x+150,275,120,"取消",8);if(!editId.empty())button(x+400,275,140,"删除",9);
                         text(x+20,325,fit(notice,42),14,0xffffcb80);
                     }
@@ -739,11 +761,16 @@ public:
                 if(!message.empty())joinNotice=std::move(message);
                 else joinNotice=status>0?"已发起加入":status==-2?"正在连接中，请稍候":"加入失败";
                 joinNoticePending=true;
-            })){
+            },
+            // 覆盖层 InputConnection 提交的整段文本与编辑键，和 SDK 回调共用同一处理路径。
+            [this](std::string value){pl::input::TextInputEvent event{};event.text=std::move(value);return text(event);},
+            [this](int keyCode){return editKey(keyCode);})){
             pl::modmenu::unregisterModule(Module);active=false;return false;
         }
         if(!inputRegistered){pl::input::registerKeyCallback([this](const auto& e){return key(e);});inputRegistered=true;}
         if(!touchRegistered){pl::input::registerTouchCallback([this](const auto& e){return homeTouch(e);});touchRegistered=true;}
+        // 中文等组合输入只在提交时到达，必须走文字回调；逐码点按键回退拿不到候选词。
+        if(!textInputRegistered){pl::input::registerTextInputCallback([this](const auto& e){return text(e);});textInputRegistered=true;}
         latencyProbe.start();
         for(int i=0;i<2;++i)workers.emplace_back([this]{worker();});renderer=std::thread([this]{render();});
         __android_log_print(ANDROID_LOG_INFO,"ServerListEnhancer","Enabled home-screen server entry and two workers");return true;
@@ -752,7 +779,7 @@ public:
         active=false;if(joining.exchange(false))cancelServerJoin();changed.notify_all();requestRepaint();if(renderer.joinable())renderer.join();for(auto& t:workers)if(t.joinable())t.join();workers.clear();
         {std::lock_guard lock(mutex);open=form=false;press.cancel();hits.clear();tasks.clear();rowAnimations.clear();rowImages.clear();rowImageBytes=0;}
         latencyProbe.stop();
-        pl::input::hideKeyboard();closeHomeUi();pl::modmenu::unregisterModule(Module);return ServerStore::getInstance().save();
+        closeKeyboard();closeHomeUi();pl::modmenu::unregisterModule(Module);return ServerStore::getInstance().save();
     }
     bool unload(){return true;}
 };
