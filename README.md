@@ -2,6 +2,20 @@
 
 Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05。客户端最低要求普通 LeviLamina 26.60.8，并须完整更新其配套符号数据后重启游戏；服务端单独构建，客户端和服务端 DLL 不可混用。Android ARM64 版使用 LeviLauncher Android 的 Preloader SDK，构建和功能范围见 [Android 适配说明](<docs/android.md>)。
 
+## 界面预览
+
+### Windows
+
+| 首页 | 添加服务器 | 服务器列表 |
+| --- | --- | --- |
+| ![Windows 主菜单：原版按钮左侧新增“服务器列表”入口](<docs/screenshots/windows-home.jpg>) | ![Windows 添加服务器表单：地址、名称与输入法提示](<docs/screenshots/windows-add-server.jpg>) | ![Windows 服务器列表：图文简介、UDP 时延与加入游戏按钮](<docs/screenshots/windows-server-list.jpg>) |
+
+### Android
+
+| 首页 | 添加服务器 | 服务器列表 |
+| --- | --- | --- |
+| ![Android 首页：社交按钮左侧的服务器入口](<docs/screenshots/android-home.jpg>) | ![Android 添加服务器表单](<docs/screenshots/android-add-server.jpg>) | ![Android 服务器列表：缩略图、时延与分页](<docs/screenshots/android-server-list.jpg>) |
+
 ## Windows 版已实现
 
 - 主菜单独立服务器列表，支持添加、编辑、删除和选中查看详情；不读写原版列表。
