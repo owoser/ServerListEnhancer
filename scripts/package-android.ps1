@@ -122,7 +122,7 @@ try {
     if (Test-Path -LiteralPath $jsonLicense) { Copy-Item -LiteralPath $jsonLicense -Destination "$mod/JSON-LICENSE.txt" }
     Copy-Item -LiteralPath (Resolve-DepFile 'boost_pfr-src' 'LICENSE_1_0.txt') -Destination "$mod/BOOST-LICENSE.txt"
     Copy-Item -LiteralPath (Resolve-DepFile 'magic_enum-src' 'LICENSE') -Destination "$mod/MAGIC-ENUM-LICENSE.txt"
-    $name = "ServerListEnhancer-$($releaseVersion.displayVersion)-$Abi.levipack"
+    $name = "ServerListEnhancer-$($releaseVersion.version)-$Abi.levipack"
     $temporaryArchive = "$stage.levipack"
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::Open($temporaryArchive, [IO.Compression.ZipArchiveMode]::Create)
@@ -150,7 +150,7 @@ try {
     $head = & git -C $root rev-parse HEAD
     $dirty = [bool](& git -C $root status --porcelain)
     [ordered]@{
-        package=$name; version=$releaseVersion.packageVersion; displayVersion=$releaseVersion.displayVersion;
+        package=$name; version=$releaseVersion.version;
         buildLeviLaminaVersion=$releaseVersion.leviLaminaVersion; sha256=$hash; abi=$Abi; androidApi=28; sdk='Preloader for LeviLauncher 1.6.0';
         sdkCommit='5d108da350ce3e7f13f51415f81e65344ecd5d14'; sourceCommit=$head; sourceDirty=$dirty;
         ndk=([IO.File]::ReadAllText((Join-Path $NdkHome 'source.properties')) -split [char]10 | Where-Object { $_ -like 'Pkg.Revision*' } | ForEach-Object { ($_ -split '=')[1].Trim() });

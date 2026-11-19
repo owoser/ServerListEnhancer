@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-17T06:57:11Z",
-  "updated_at": "2026-11-19T02:21:05Z",
+  "updated_at": "2026-11-19T03:12:31Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -17,21 +17,21 @@
     },
     "AGENTS.md": {
       "role": "index",
-      "sha256": "5e8ae9eaa16cf1885ec16a38a2aaab8466c59287a0b30198069e26c6c7c71d0c",
-      "size": 26300,
-      "normalized_sha256": "5e8ae9eaa16cf1885ec16a38a2aaab8466c59287a0b30198069e26c6c7c71d0c"
+      "sha256": "1f141eb129aa71ec508753888f0018d4ebc5ecf4d10cdc800d896bfee98c9ce3",
+      "size": 26093,
+      "normalized_sha256": "1f141eb129aa71ec508753888f0018d4ebc5ecf4d10cdc800d896bfee98c9ce3"
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "36e67d96dd7b2814473bf3d752f06889cf6ee3a1ca5f56f879a1b5fc1cf04a9a",
-      "size": 1460,
-      "normalized_sha256": "36e67d96dd7b2814473bf3d752f06889cf6ee3a1ca5f56f879a1b5fc1cf04a9a"
+      "sha256": "408d82026c0de75b26b7dd52dca0429724fc848c1100b2de7faf7d3106ea804e",
+      "size": 1582,
+      "normalized_sha256": "408d82026c0de75b26b7dd52dca0429724fc848c1100b2de7faf7d3106ea804e"
     },
     "README.md": {
       "role": "index",
-      "sha256": "b5057cc64cfa0edbaa850f96a55ee2872a28adebccfdb3a158a4045d2d13d49c",
-      "size": 8211,
-      "normalized_sha256": "b5057cc64cfa0edbaa850f96a55ee2872a28adebccfdb3a158a4045d2d13d49c"
+      "sha256": "46d8abaa67f423611b63c48a40c3eb75c9104b388c1658a6fc0ed5d3c4b68088",
+      "size": 8625,
+      "normalized_sha256": "46d8abaa67f423611b63c48a40c3eb75c9104b388c1658a6fc0ed5d3c4b68088"
     },
     "THIRD_PARTY_NOTICES.md": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "android/CMakeLists.txt": {
       "role": "index",
-      "sha256": "e36e109de23213e76166ca8985eeb512c01202c35ec89f8167169c730bcde3d4",
-      "size": 4446,
-      "normalized_sha256": "e36e109de23213e76166ca8985eeb512c01202c35ec89f8167169c730bcde3d4"
+      "sha256": "fcecf89ee04019dfec5f8ae792d4d05dd07a97eb79c97aa1fcec43560ed57c7e",
+      "size": 4349,
+      "normalized_sha256": "fcecf89ee04019dfec5f8ae792d4d05dd07a97eb79c97aa1fcec43560ed57c7e"
     },
     "android/java/cn/owoser/sle/HomeOverlay.java": {
       "role": "index",
@@ -53,9 +53,9 @@
     },
     "android/manifest.json.in": {
       "role": "index",
-      "sha256": "d33e6ceb93cce0f587428306a465e238d5d89e0fdb5b3c2b48aeb31d86e9765e",
-      "size": 627,
-      "normalized_sha256": "d33e6ceb93cce0f587428306a465e238d5d89e0fdb5b3c2b48aeb31d86e9765e"
+      "sha256": "2b2e1d0e60baf95de10ce21e1bdeff491a5e1179ad73101525e5105dfe58a034",
+      "size": 580,
+      "normalized_sha256": "2b2e1d0e60baf95de10ce21e1bdeff491a5e1179ad73101525e5105dfe58a034"
     },
     "android/resources/minecraft_resource_packs/sle_home/manifest.json": {
       "role": "index",
@@ -149,9 +149,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "2d3db826718518cc0105880fce56d721570c42e4a9ddb49c0bf7e0bf694d608e",
-      "size": 43119,
-      "normalized_sha256": "2d3db826718518cc0105880fce56d721570c42e4a9ddb49c0bf7e0bf694d608e"
+      "sha256": "746cf8900b829c0bce352a8e0586cbf4d8351a5142666f7c44e37a827249c1dc",
+      "size": 43431,
+      "normalized_sha256": "746cf8900b829c0bce352a8e0586cbf4d8351a5142666f7c44e37a827249c1dc"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -167,9 +167,9 @@
     },
     "docs/android.md": {
       "role": "index",
-      "sha256": "6b5ebac0498a870d1e4042bac32d496411e85cc4a08254cffaa4bfe2f91a9d81",
-      "size": 13170,
-      "normalized_sha256": "6b5ebac0498a870d1e4042bac32d496411e85cc4a08254cffaa4bfe2f91a9d81"
+      "sha256": "ada90e3d0bfd8b777484a3da56658cc0a5d2caf0cd35192a4e1a4b09f20da7cc",
+      "size": 13172,
+      "normalized_sha256": "ada90e3d0bfd8b777484a3da56658cc0a5d2caf0cd35192a4e1a4b09f20da7cc"
     },
     "docs/discovery-images.md": {
       "role": "index",
@@ -191,9 +191,9 @@
     },
     "docs/releasing.md": {
       "role": "index",
-      "sha256": "8ad4b4e112c43406a6eac2affe1d5592e1b3d8f179a1476644c5b99cf57dd963",
-      "size": 10170,
-      "normalized_sha256": "8ad4b4e112c43406a6eac2affe1d5592e1b3d8f179a1476644c5b99cf57dd963"
+      "sha256": "991968826942359491012a7ba8c4c51514490b78f5f17e17c81e8b09a2a29134",
+      "size": 10087,
+      "normalized_sha256": "991968826942359491012a7ba8c4c51514490b78f5f17e17c81e8b09a2a29134"
     },
     "docs/validation-discovery.md": {
       "role": "index",
@@ -209,21 +209,21 @@
     },
     "lip.toml": {
       "role": "index",
-      "sha256": "9cd4dba00bef9ad3a0ca87fc7b48f43c531ec19e4f0cebae539f85186482a377",
-      "size": 1509,
-      "normalized_sha256": "9cd4dba00bef9ad3a0ca87fc7b48f43c531ec19e4f0cebae539f85186482a377"
+      "sha256": "bda62b28b38c7019929445b401c08a8acdc7e71127475a19dbf49e7c6a65cce4",
+      "size": 1463,
+      "normalized_sha256": "bda62b28b38c7019929445b401c08a8acdc7e71127475a19dbf49e7c6a65cce4"
     },
     "manifest-client.json": {
       "role": "index",
-      "sha256": "d31f8cd5f5fd25f24198ff7e229a67ac6d1596be207f01166ffc7b8755fc9754",
-      "size": 440,
-      "normalized_sha256": "d31f8cd5f5fd25f24198ff7e229a67ac6d1596be207f01166ffc7b8755fc9754"
+      "sha256": "990943686ffbb30b42361637c0d953debdb4c6ba212920e14cfa5e649df71383",
+      "size": 390,
+      "normalized_sha256": "990943686ffbb30b42361637c0d953debdb4c6ba212920e14cfa5e649df71383"
     },
     "manifest.json": {
       "role": "index",
-      "sha256": "8c0f3b4f2e549c2b449b8f15d77aee31d9aa3300b9dbdafd17759f36b68f547c",
-      "size": 309,
-      "normalized_sha256": "8c0f3b4f2e549c2b449b8f15d77aee31d9aa3300b9dbdafd17759f36b68f547c"
+      "sha256": "8f25e2a32a74f63435b59459aa90ce07e25369d92363a4c3a9a3d915c160a0ae",
+      "size": 259,
+      "normalized_sha256": "8f25e2a32a74f63435b59459aa90ce07e25369d92363a4c3a9a3d915c160a0ae"
     },
     "resources/intro/default.png": {
       "role": "index",
@@ -237,9 +237,9 @@
     },
     "scripts/build-release.ps1": {
       "role": "index",
-      "sha256": "e6cea8d3f4e11ab602d5c3344275967b7513164220587f285181468a2d33f68c",
-      "size": 5198,
-      "normalized_sha256": "e6cea8d3f4e11ab602d5c3344275967b7513164220587f285181468a2d33f68c"
+      "sha256": "313648496bc4a69c584d972a280b4e4534eb782fc76ab068ecb98c804e15d50c",
+      "size": 4749,
+      "normalized_sha256": "313648496bc4a69c584d972a280b4e4534eb782fc76ab068ecb98c804e15d50c"
     },
     "scripts/generate-builtin-assets.cjs": {
       "role": "index",
@@ -249,15 +249,15 @@
     },
     "scripts/package-android.ps1": {
       "role": "index",
-      "sha256": "8aca8c67a779874df32419c78bcbc257d9c87a47862b6d152d44844e0bf35f42",
-      "size": 12284,
-      "normalized_sha256": "8aca8c67a779874df32419c78bcbc257d9c87a47862b6d152d44844e0bf35f42"
+      "sha256": "681b139e2d7f8a9df965af2d001ddf1cd3fa99a52ea60612905f4f531916f55e",
+      "size": 12223,
+      "normalized_sha256": "681b139e2d7f8a9df965af2d001ddf1cd3fa99a52ea60612905f4f531916f55e"
     },
     "scripts/package-ui-gif.ps1": {
       "role": "index",
-      "sha256": "8eee965d130c57e86b98fb19c388b0efa333b4ea9019c8866ee4f319f67eea5a",
-      "size": 6082,
-      "normalized_sha256": "8eee965d130c57e86b98fb19c388b0efa333b4ea9019c8866ee4f319f67eea5a"
+      "sha256": "1e21327e7e554a516946ff712696f0701d1de624d0d76c2ad8ae8296a78425cb",
+      "size": 5981,
+      "normalized_sha256": "1e21327e7e554a516946ff712696f0701d1de624d0d76c2ad8ae8296a78425cb"
     },
     "src-client/AddressParser.h": {
       "role": "index",
@@ -729,15 +729,15 @@
     },
     "version.json": {
       "role": "index",
-      "sha256": "017665ea9f802c049de87587f5a2084de5d452f1fe4d75959de06c57510552ce",
-      "size": 121,
-      "normalized_sha256": "017665ea9f802c049de87587f5a2084de5d452f1fe4d75959de06c57510552ce"
+      "sha256": "ddef38681e052ab43bdf51d6821dcdda8664021e023afec6492656bc9e422571",
+      "size": 81,
+      "normalized_sha256": "ddef38681e052ab43bdf51d6821dcdda8664021e023afec6492656bc9e422571"
     },
     "xmake.lua": {
       "role": "index",
-      "sha256": "6d99fdf8235ddbd29ce50d4f34b991bea0426fcf91b5e7745996d22fac1e2aca",
-      "size": 4802,
-      "normalized_sha256": "6d99fdf8235ddbd29ce50d4f34b991bea0426fcf91b5e7745996d22fac1e2aca"
+      "sha256": "6e6156ddbf58cc65c0c9988874862a46fc2b4af0a7a43ce13c16074bb953b79c",
+      "size": 4725,
+      "normalized_sha256": "6e6156ddbf58cc65c0c9988874862a46fc2b4af0a7a43ce13c16074bb953b79c"
     }
   },
   "managed_scope": {

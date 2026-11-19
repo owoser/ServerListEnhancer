@@ -4,7 +4,6 @@
   "author": "@MOD_AUTHOR@",
   "version": "@MOD_VERSION@",
   "extraInfo": {
-    "displayVersion": "@SLE_DISPLAY_VERSION@",
     "buildLeviLaminaVersion": "@SLE_LL_VERSION@"
   },
   "entry": "libserver_list_enhancer.so",

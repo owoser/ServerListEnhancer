@@ -39,12 +39,11 @@ rule("sle.modpacker")
     after_build(function(target)
         import("core.base.json")
         local releaseVersion = json.loadfile(path.join(os.projectdir(), "version.json"))
-        assert(releaseVersion and releaseVersion.packageVersion, "Missing release version metadata")
+        assert(releaseVersion and releaseVersion.version, "Missing release version metadata")
         local variables = {
             modName = "ServerListEnhancer",
             modFile = "ServerListEnhancer.dll",
-            modVersion = releaseVersion.packageVersion,
-            modDisplayVersion = releaseVersion.displayVersion,
+            modVersion = releaseVersion.version,
             modBuildLoaderVersion = llVersion,
             modPlatform = targetType
         }

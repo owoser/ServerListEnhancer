@@ -6,7 +6,6 @@
     "type": "native",
     "platform": "${modPlatform}",
     "extraInfo": {
-        "displayVersion": "${modDisplayVersion}",
         "buildLeviLaminaVersion": "${modBuildLoaderVersion}"
     }
 }

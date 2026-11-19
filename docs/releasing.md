@@ -4,24 +4,23 @@
 
 ## 版本唯一事实源
 
-根目录 [version.json](<../version.json>) 保存四个字段，构建与打包均从这里取值。修改版本属于发版动作，未获该次明确授权时不得自动 bump。
+根目录 [version.json](<../version.json>) 保存三个字段，构建与打包均从这里取值。修改版本属于发版动作，未获该次明确授权时不得自动 bump。
 
 | 字段 | 含义 | 本次示例 |
 | --- | --- | --- |
+| `version` | 全平台唯一三段版本号，同时用于 lip、加载器清单、标签、Release 标题和包名 | `26.60.8001` |
 | `leviLaminaVersion` | Windows 已验证的 LL 构建版本 | `26.60.8` |
 | `revision` | 对应 LL 版本下的自有发行序号，从 1 开始，范围 1..999 | `1` |
-| `displayVersion` | 面向用户的四段显示版本 | `26.60.8.1` |
-| `packageVersion` | lip 和加载器使用的三段兼容包版本 | `26.60.8001` |
 
-设 LL 版本为 `a.b.c`，自有序号为 `r`，则显示版本为 `a.b.c.r`，包版本为 `a.b.(c×1000+r)`。序号达到 999 后不得自行溢出；需要重新确认版本方案。lip 0.41.1 实测拒绝四段 SemVer，不能把 `26.60.8.1` 直接填入包版本。
+设 LL 版本为 `a.b.c`，自有序号为 `r`，则版本号为 `a.b.(c×1000+r)`；本轮 `26.60.8` + `1` → `26.60.8001`。LL 版本变更时序号从 `1` 重新开始；序号达到 999 后不得自行溢出，需要重新确认版本方案。lip 0.41.1 实测拒绝四段 SemVer，`26.60.8.1` 这类四段号禁止出现在 `lip.toml`、加载器清单或标签里。
 
-以下身份必须分别核对，不能把显示版本与包版本互换：
+以下身份全部使用同一个版本号，必须一致：
 
-- [lip.toml](<../lip.toml>) 的 `version`、Windows 与 Android 模组加载器的 `manifest.version` 使用 `packageVersion`，本次为 `26.60.8001`。
-- Git 版本标签为 `v<packageVersion>`，本次为 **`v26.60.8001`**。标签所指提交中的 lip 版本必须与标签严格一致，否则 lip 会跳过该标签。
-- GitHub Release 标题为 `displayVersion`，本次为 **`26.60.8.1`**。显示号可放入清单的附加信息，不代替机器包版本。
-- Windows 下载包名为 `ServerListEnhancer-client-v26.60.8.1.zip` 和 `ServerListEnhancer-server-v26.60.8.1.zip`；Android 下载包名为 `ServerListEnhancer-26.60.8.1-arm64-v8a.levipack`。
-- 下载 URL 的标签段使用三段包号，例如 `releases/download/v26.60.8001/`；其后的资产文件名使用四段显示号。
+- [lip.toml](<../lip.toml>) 的 `version`、Windows 与 Android 模组加载器的 `manifest.version` 均为 `26.60.8001`。
+- Git 版本标签为 `v<version>`，本次为 **`v26.60.8001`**。标签所指提交中的 lip 版本必须与标签严格一致，否则 lip 会跳过该标签。
+- GitHub Release 标题为版本号 **`26.60.8001`**。
+- Windows 下载包名为 `ServerListEnhancer-client-v26.60.8001.zip` 和 `ServerListEnhancer-server-v26.60.8001.zip`；Android 下载包名为 `ServerListEnhancer-26.60.8001-arm64-v8a.levipack`。
+- 下载 URL 的标签段与资产文件名使用同一个版本号，例如 `releases/download/v26.60.8001/ServerListEnhancer-server-v26.60.8001.zip`。
 
 LL 最低运行门禁、lip 依赖、构建 SDK 与游戏 ABI 是不同检查项。本次 Windows lip 依赖精确绑定 LL `26.60.8`；最低门禁通过不证明未来 LL/游戏版本已验证。Android 使用独立的 Preloader SDK，继续遵守 [Android 构建说明](<android.md>) 的启动器、NDK 与游戏版本约束。
 
@@ -41,7 +40,7 @@ lip CLI 仅管理服务端工作区，安装命令为 `lip install github.com/ow
 
 ## 发布前：准备并校验产物
 
-1. 核对本次用户发版指令、目标显示号和兼容范围。按批准值更新唯一版本源，并让 lip 清单、加载器清单及打包结果保持一致。不要根据普通修复或 push 自行分配新版本。
+1. 核对本次用户发版指令、目标版本号和兼容范围。按批准值更新唯一版本源，并让 lip 清单、加载器清单及打包结果保持一致。不要根据普通修复或 push 自行分配新版本。
 2. 在仓库根确认 lip 为 0.41 或更新版本，使用真实解析器校验清单及模板展开：
 
    ```powershell
@@ -50,7 +49,7 @@ lip CLI 仅管理服务端工作区，安装命令为 `lip install github.com/ow
    ./scripts/build-release.ps1 -ValidateOnly
    ```
 
-   检查 `manifest.version`、显示号、两端 `side/platform`、LL 依赖及完整下载 URL。`-ValidateOnly` 不执行构建。
+   检查 `manifest.version`、两端 `side/platform`、LL 依赖及完整下载 URL。`-ValidateOnly` 不执行构建。
 3. 运行 [发布准备脚本](<../scripts/build-release.ps1>)：
 
    ```powershell
@@ -59,7 +58,7 @@ lip CLI 仅管理服务端工作区，安装命令为 `lip install github.com/ow
 
    脚本只读取版本、构建和校验，不改版本、不建标签、不 push、不创建或发布 Release。Windows 必须串行构建 client/server；每端产物先从 `bin/ServerListEnhancer` 保存到各自暂存目录，再切下一端，不能并发切 xmake 配置。两端共用 `sle.modpacker`，不能依靠遗留暂存 DLL 冒充本次构建。Android 随后执行独立打包和主机 CTest、DEX、ARM64 ELF/依赖检查。
 4. 按本轮改动运行必要回归，记录实际结果。中文输入要切到中文模式，走拼音、候选选词和提交；英语布局下的主机字符测试不能代替 IME 验证。需联网或启动游戏时只用已授权的开发环境，不把生产服或玩家资料用作测试。
-5. 打开每个最终归档核对清单：`version=packageVersion`，Windows `platform` 与 client/server 相符，附加显示号与构建 LL 版本相符；依赖与已验证范围一致。确认 ZIP 内目录形状匹配 `place`、Android 包内包含原生库及 DEX、第三方说明齐备；不得混入用户列表、缓存或本机配置。
+5. 打开每个最终归档核对清单：`version=<version>`，Windows `platform` 与 client/server 相符，构建 LL 版本与 `leviLaminaVersion` 相符；依赖与已验证范围一致。确认 ZIP 内目录形状匹配 `place`、Android 包内包含原生库及 DEX、第三方说明齐备；不得混入用户列表、缓存或本机配置。
 6. 检查 [dist](<../dist/>) 中三类正式包及 `SHA256SUMS.txt`。摘要中的三个文件名和 SHA256 必须对应本次最终产物，不使用旧版本文件或构建前摘要。
 7. 所有受管理源码、脚本和文档达到最终稳定状态后，由集成 lead 按当前 AOCI Guide 完成普通维护，处理全部批次与停点，再依次证明对齐：
 
@@ -80,16 +79,16 @@ lip CLI 仅管理服务端工作区，安装命令为 `lip install github.com/ow
 
 ```powershell
 $release = Get-Content ./version.json -Raw | ConvertFrom-Json
-$tag = "v$($release.packageVersion)"
+$tag = "v$($release.version)"
 $commit = git rev-parse HEAD
 # 先核对 $commit 已推送，且 build/release-notes.md 是本版已审阅的 UTF-8 发布说明。
-gh release create $tag --repo owoser/ServerListEnhancer --draft --target $commit --title $release.displayVersion --notes-file build/release-notes.md
+gh release create $tag --repo owoser/ServerListEnhancer --draft --target $commit --title $release.version --notes-file build/release-notes.md
 ```
 
 草稿创建成功后，上传三个正式包与本地摘要：
 
 ```powershell
-gh release upload $tag --repo owoser/ServerListEnhancer "dist/ServerListEnhancer-client-v$($release.displayVersion).zip" "dist/ServerListEnhancer-server-v$($release.displayVersion).zip" "dist/android/ServerListEnhancer-$($release.displayVersion)-arm64-v8a.levipack" dist/SHA256SUMS.txt
+gh release upload $tag --repo owoser/ServerListEnhancer "dist/ServerListEnhancer-client-v$($release.version).zip" "dist/ServerListEnhancer-server-v$($release.version).zip" "dist/android/ServerListEnhancer-$($release.version)-arm64-v8a.levipack" dist/SHA256SUMS.txt
 ```
 
 每条命令非零退出或结果未知时先查看该草稿及其资产，不盲目重试，不继续公开。通过已登录账号把草稿资产下载到本次新建的 [build](<../build/>) 隔离目录；核对资产数目、文件名、大小和每个包的 SHA256，下载的摘要文件也须与本地最终摘要一致：
@@ -101,7 +100,7 @@ gh release download $tag --repo owoser/ServerListEnhancer --dir $verifyDir
 gh release edit $tag --repo owoser/ServerListEnhancer --draft=false
 ```
 
-公开后再次核对 tag 指向记录的提交，Release 标题是显示号，资产可公开下载。保存 Release URL、tag、提交 SHA 和最终三包摘要。如果公开后发现问题，先报告具体版本与资产；不要静默移动标签或覆盖原有资产，修复版需要该次新的明确发布指令。
+公开后再次核对 tag 指向记录的提交，Release 标题就是版本号，资产可公开下载。保存 Release URL、tag、提交 SHA 和最终三包摘要。如果公开后发现问题，先报告具体版本与资产；不要静默移动标签或覆盖原有资产，修复版需要该次新的明确发布指令。
 
 ## 公开后的远端与隔离安装验证
 

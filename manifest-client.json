@@ -6,7 +6,6 @@
     "type": "native",
     "platform": "client",
     "extraInfo": {
-        "displayVersion": "${modDisplayVersion}",
         "buildLeviLaminaVersion": "${modBuildLoaderVersion}",
         "minimumLeviLaminaVersion": "26.60.8",
         "versionEnforcement": "Runtime load guard; loader is not a regular mod dependency"
