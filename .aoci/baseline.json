@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-17T06:57:11Z",
-  "updated_at": "2026-11-19T03:17:39Z",
+  "updated_at": "2026-11-19T03:31:17Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -17,21 +17,21 @@
     },
     "AGENTS.md": {
       "role": "index",
-      "sha256": "1f141eb129aa71ec508753888f0018d4ebc5ecf4d10cdc800d896bfee98c9ce3",
-      "size": 26093,
-      "normalized_sha256": "1f141eb129aa71ec508753888f0018d4ebc5ecf4d10cdc800d896bfee98c9ce3"
+      "sha256": "3ff9ad42fa4c216cf36548a382c32f3049a778cc6d0e64db7c483d1b635f83aa",
+      "size": 26306,
+      "normalized_sha256": "3ff9ad42fa4c216cf36548a382c32f3049a778cc6d0e64db7c483d1b635f83aa"
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "408d82026c0de75b26b7dd52dca0429724fc848c1100b2de7faf7d3106ea804e",
-      "size": 1582,
-      "normalized_sha256": "408d82026c0de75b26b7dd52dca0429724fc848c1100b2de7faf7d3106ea804e"
+      "sha256": "6c335d18d8a40da307bf8b846c533adb84d6d8db0031c902d98a35d6676f663a",
+      "size": 2417,
+      "normalized_sha256": "6c335d18d8a40da307bf8b846c533adb84d6d8db0031c902d98a35d6676f663a"
     },
     "README.md": {
       "role": "index",
-      "sha256": "46d8abaa67f423611b63c48a40c3eb75c9104b388c1658a6fc0ed5d3c4b68088",
+      "sha256": "3a90891e91ebcb58e1b7af69762cdf623571ef46ca4ca10f6ced9d0200410469",
       "size": 8625,
-      "normalized_sha256": "46d8abaa67f423611b63c48a40c3eb75c9104b388c1658a6fc0ed5d3c4b68088"
+      "normalized_sha256": "3a90891e91ebcb58e1b7af69762cdf623571ef46ca4ca10f6ced9d0200410469"
     },
     "THIRD_PARTY_NOTICES.md": {
       "role": "index",
@@ -149,9 +149,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "293f331b1d3bfb8a7b3f71b8fc1e1127623158d9d6a4e4e849920794a932e4f5",
-      "size": 43512,
-      "normalized_sha256": "293f331b1d3bfb8a7b3f71b8fc1e1127623158d9d6a4e4e849920794a932e4f5"
+      "sha256": "aee6763d86c3600f0fa9e823a4caa0b2ccb83fb80e5f845e196c0cb1edcba271",
+      "size": 43574,
+      "normalized_sha256": "aee6763d86c3600f0fa9e823a4caa0b2ccb83fb80e5f845e196c0cb1edcba271"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -167,9 +167,9 @@
     },
     "docs/android.md": {
       "role": "index",
-      "sha256": "ada90e3d0bfd8b777484a3da56658cc0a5d2caf0cd35192a4e1a4b09f20da7cc",
+      "sha256": "aa06df5117198e0d2cdc594a00039514c41c67af49f81da028c0ad1bc8571350",
       "size": 13172,
-      "normalized_sha256": "ada90e3d0bfd8b777484a3da56658cc0a5d2caf0cd35192a4e1a4b09f20da7cc"
+      "normalized_sha256": "aa06df5117198e0d2cdc594a00039514c41c67af49f81da028c0ad1bc8571350"
     },
     "docs/discovery-images.md": {
       "role": "index",
@@ -191,9 +191,9 @@
     },
     "docs/releasing.md": {
       "role": "index",
-      "sha256": "368d0d6b6ec2aece741df15fd127d0b6fd2801f93ca146131d259d84049edf27",
-      "size": 10448,
-      "normalized_sha256": "368d0d6b6ec2aece741df15fd127d0b6fd2801f93ca146131d259d84049edf27"
+      "sha256": "e3540b9c0b6a5c5aebdd517b0e6d2d07a2f357577decf2f446ed3b72d283cb12",
+      "size": 10584,
+      "normalized_sha256": "e3540b9c0b6a5c5aebdd517b0e6d2d07a2f357577decf2f446ed3b72d283cb12"
     },
     "docs/validation-discovery.md": {
       "role": "index",
@@ -209,9 +209,9 @@
     },
     "lip.toml": {
       "role": "index",
-      "sha256": "bda62b28b38c7019929445b401c08a8acdc7e71127475a19dbf49e7c6a65cce4",
-      "size": 1463,
-      "normalized_sha256": "bda62b28b38c7019929445b401c08a8acdc7e71127475a19dbf49e7c6a65cce4"
+      "sha256": "e16f454b1ea9d335630802ef937cffcc52d181575524ef542ed6be7252832edc",
+      "size": 1634,
+      "normalized_sha256": "e16f454b1ea9d335630802ef937cffcc52d181575524ef542ed6be7252832edc"
     },
     "manifest-client.json": {
       "role": "index",
@@ -237,9 +237,9 @@
     },
     "scripts/build-release.ps1": {
       "role": "index",
-      "sha256": "313648496bc4a69c584d972a280b4e4534eb782fc76ab068ecb98c804e15d50c",
-      "size": 4749,
-      "normalized_sha256": "313648496bc4a69c584d972a280b4e4534eb782fc76ab068ecb98c804e15d50c"
+      "sha256": "ee50a9af11a0fed1020bf0b92bc01e6b0a0e37f8e008416e49fa6917f4f33bfa",
+      "size": 5017,
+      "normalized_sha256": "ee50a9af11a0fed1020bf0b92bc01e6b0a0e37f8e008416e49fa6917f4f33bfa"
     },
     "scripts/generate-builtin-assets.cjs": {
       "role": "index",
@@ -729,9 +729,9 @@
     },
     "version.json": {
       "role": "index",
-      "sha256": "ddef38681e052ab43bdf51d6821dcdda8664021e023afec6492656bc9e422571",
+      "sha256": "92427b1f275d69153950bc4341ee54825df2e97be7a442df37d6c9f1bbb252bc",
       "size": 81,
-      "normalized_sha256": "ddef38681e052ab43bdf51d6821dcdda8664021e023afec6492656bc9e422571"
+      "normalized_sha256": "92427b1f275d69153950bc4341ee54825df2e97be7a442df37d6c9f1bbb252bc"
     },
     "xmake.lua": {
       "role": "index",

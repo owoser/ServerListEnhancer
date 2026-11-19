@@ -1,5 +1,17 @@
 # Changelog
 
+## [26.60.8002] - 2026-11-19
+
+撤回并重新发布 26.60.8001：该版本的标签与发布包重建，发行序号按规则递增到 2（版本号 26.60.8002）。构建仍基于 LeviLamina 26.60.8。
+
+### Changed
+
+- 服务端 lip 依赖从精确 `26.60.8` 放宽为 `>=26.60.2`。服务端没有运行期版本门禁，同一份源码在 26.60.2 SDK 下也能编译并链接（prelink 消费 `levilamina\26.60.2\...\LeviLamina.lib`），因此在 LL 26.60.2 的服务器工作区可以直接 `lip install`。Windows 客户端仍精确要求 `26.60.8`：加入游戏用到的 `World::ServerWorldJoiner::joinExternalServer` 与运行门禁都在该版本。
+
+### Fixed
+
+- 修复在 LeviLamina 26.60.2 的服务器工作区安装时被 lip 依赖求解拒绝的问题（`Cannot find versions of the packages that work together`）。
+
 ## [26.60.8001] - 2026-11-19
 
 构建基于 LeviLamina 26.60.8。全平台统一使用三段版本号 26.60.8001（LL 补丁 8 × 1000 + 发行序号 1），Git 标签为 v26.60.8001；此前的四段显示号 26.60.8.1 已废弃，因为 lip 的 SemVer 解析器拒绝四段版本。

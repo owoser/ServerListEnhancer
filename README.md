@@ -24,7 +24,7 @@ Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05。客户端最低�
 
   ```powershell
   lip install github.com/owoser/ServerListEnhancer   # 首次安装
-  lip list                                          # 应显示 26.60.8001
+  lip list                                          # 应显示 26.60.8002
   lip update                                        # 后续升级到新版本
   lip pkg view github.com/owoser/ServerListEnhancer # 查看远端可安装版本
   ```
@@ -38,7 +38,7 @@ Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05。客户端最低�
 
 ## 版本与发布
 
-版本以 [version.json](<version.json>) 为唯一事实源，全平台只有一个三段版本号，当前为 **26.60.8001**：`[lip.toml](<lip.toml>)`、各端加载器清单、Git 标签 `v26.60.8001`、GitHub Release 标题与下载包名都使用同一个值。规则为 `版本末段 = LL补丁版本 × 1000 + 自有发行序号`，自有发行序号从 1 开始、上限 999，LL 版本变更时序号从 1 重新开始；四段号会被 lip 的 SemVer 解析器拒绝，因此不再区分“显示版本”和“包版本”。
+版本以 [version.json](<version.json>) 为唯一事实源，全平台只有一个三段版本号，当前为 **26.60.8002**：`[lip.toml](<lip.toml>)`、各端加载器清单、Git 标签 `v26.60.8002`、GitHub Release 标题与下载包名都使用同一个值。规则为 `版本末段 = LL补丁版本 × 1000 + 自有发行序号`，自有发行序号从 1 开始、上限 999，LL 版本变更时序号从 1 重新开始；四段号会被 lip 的 SemVer 解析器拒绝，因此不再区分“显示版本”和“包版本”。
 
 普通修复和推送代码不会自动改版本或发版；只有用户明确要求发布该版时才更新版本、创建标签和 Release。[发布准备脚本](<scripts/build-release.ps1>) 只构建和校验，不执行发布。完整的构建、草稿、资产哈希和隔离安装验证步骤见 [发布流程](<docs/releasing.md>)。
 

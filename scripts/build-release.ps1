@@ -25,7 +25,10 @@ $variants = @($manifest.manifest.variants.'')
 if ($variants.Count -ne 2) { throw 'Expected exactly the Windows server and client lip entries' }
 foreach ($side in @('client', 'server')) {
     $entry = @($variants | Where-Object { $_.side -eq $side -and $_.platform -eq 'win-x64' })
-    if ($entry.Count -ne 1 -or $entry[0].deps.'github.com/LiteLDev/LeviLamina' -ne $release.leviLaminaVersion) {
+    # The client gate and its join API need the tested SDK exactly; the server has no runtime
+    # gate and also links against 26.60.2, so its lip dependency is the relaxed range below.
+    $expectedDep = if ($side -eq 'client') { $release.leviLaminaVersion } else { '>=26.60.2' }
+    if ($entry.Count -ne 1 -or $entry[0].deps.'github.com/LiteLDev/LeviLamina' -ne $expectedDep) {
         throw "Missing or mismatched $side lip dependency"
     }
     $expectedUrl = "https://github.com/owoser/ServerListEnhancer/releases/download/v$($release.version)/ServerListEnhancer-$side-v$($release.version).zip"

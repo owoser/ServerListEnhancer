@@ -1,6 +1,6 @@
 format = 4
 id = "github.com/owoser/ServerListEnhancer"
-version = "26.60.8001"
+version = "26.60.8002"
 
 [info]
 name = "ServerListEnhancer"
@@ -14,7 +14,9 @@ platform = "win-x64"
 preserve = ["mods/ServerListEnhancer/config/", "mods/ServerListEnhancer/servers.json", "mods/ServerListEnhancer/cache/"]
 
 [variants."".deps]
-"github.com/LiteLDev/LeviLamina" = "26.60.8"
+# The server side keeps no runtime version gate and links against LL 26.60.2 as well
+# (same sources, prelink consumes that LeviLamina.lib), so accept any newer loader.
+"github.com/LiteLDev/LeviLamina" = ">=26.60.2"
 
 [[variants."".assets]]
 type = "zip"
