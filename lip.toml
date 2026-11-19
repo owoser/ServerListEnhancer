@@ -1,0 +1,38 @@
+format = 4
+id = "github.com/owoser/ServerListEnhancer"
+version = "26.60.8001"
+display_version = "26.60.8.1"
+
+[info]
+name = "ServerListEnhancer"
+description = "服务器列表增强：中文输入、动态图文简介与真实延迟，支持 Windows 客户端及配套服务端。"
+tags = ["visual", "utility"]
+logo = "https://raw.githubusercontent.com/owoser/ServerListEnhancer/main/resources/logo/default.png"
+
+[[variants.""]]
+side = "server"
+platform = "win-x64"
+preserve = ["mods/ServerListEnhancer/config/", "mods/ServerListEnhancer/servers.json", "mods/ServerListEnhancer/cache/"]
+
+[variants."".deps]
+"github.com/LiteLDev/LeviLamina" = "26.60.8"
+
+[[variants."".assets]]
+type = "zip"
+urls = ["https://{{id}}/releases/download/v{{version}}/ServerListEnhancer-server-v{{display_version}}.zip"]
+place = [{ src = "ServerListEnhancer/", dest = "mods/ServerListEnhancer/" }]
+
+[[variants.""]]
+side = "client"
+platform = "win-x64"
+preserve = ["mods/ServerListEnhancer/config/", "mods/ServerListEnhancer/servers.json", "mods/ServerListEnhancer/cache/"]
+
+[variants."".deps]
+# Use the bare ID: current LeviLamina lip.toml releases select client by side.
+# Match the tested SDK exactly; runtime minimum alone does not prove future ABI compatibility.
+"github.com/LiteLDev/LeviLamina" = "26.60.8"
+
+[[variants."".assets]]
+type = "zip"
+urls = ["https://{{id}}/releases/download/v{{version}}/ServerListEnhancer-client-v{{display_version}}.zip"]
+place = [{ src = "ServerListEnhancer/", dest = "mods/ServerListEnhancer/" }]

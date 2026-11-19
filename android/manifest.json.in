@@ -3,6 +3,10 @@
   "name": "@MOD_NAME@",
   "author": "@MOD_AUTHOR@",
   "version": "@MOD_VERSION@",
+  "extraInfo": {
+    "displayVersion": "@SLE_DISPLAY_VERSION@",
+    "buildLeviLaminaVersion": "@SLE_LL_VERSION@"
+  },
   "entry": "libserver_list_enhancer.so",
   "icon": "resources/logo.png",
   "overwrite_files": ["ui.dex", "README.md", "THIRD_PARTY_NOTICES.md", "resources/minecraft_resource_packs/sle_home/manifest.json", "resources/minecraft_resource_packs/sle_home/ui/start_screen.json"],

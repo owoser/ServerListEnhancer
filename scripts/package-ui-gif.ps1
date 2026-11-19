@@ -1,6 +1,7 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $release = Join-Path $root 'dist'
+$releaseVersion = Get-Content -LiteralPath (Join-Path $root 'version.json') -Raw | ConvertFrom-Json
 $temporaryParent = Join-Path $root 'build'
 $temporaryRoot = Join-Path $temporaryParent ('.package-ui-gif-' + [Guid]::NewGuid().ToString('N'))
 $artifactFiles = @('ServerListEnhancer.dll', 'ServerListEnhancer.pdb', 'manifest.json')
@@ -67,6 +68,12 @@ try {
     $archiveNames = @()
     foreach ($side in @('client', 'server')) {
         $source = Join-Path $release "$side/ServerListEnhancer"
+        $manifest = Get-Content -LiteralPath (Join-Path $source 'manifest.json') -Raw | ConvertFrom-Json
+        if ($manifest.version -ne $releaseVersion.packageVersion -or $manifest.platform -ne $side -or
+            $manifest.extraInfo.displayVersion -ne $releaseVersion.displayVersion -or
+            $manifest.extraInfo.buildLeviLaminaVersion -ne $releaseVersion.leviLaminaVersion) {
+            throw "Stale or mismatched $side manifest; rebuild using version.json before packaging"
+        }
         $stageRoot = Join-Path $temporaryRoot $side
         $stage = Join-Path $stageRoot 'ServerListEnhancer'
         New-Item -ItemType Directory -Force $stage | Out-Null
@@ -77,7 +84,7 @@ try {
         if (Test-Path -LiteralPath $config -PathType Container) {
             Copy-Item -LiteralPath $config -Destination (Join-Path $stage 'config') -Recurse
         }
-        $archiveName = "ServerListEnhancer-$side-v1.0.0.zip"
+        $archiveName = "ServerListEnhancer-$side-v$($releaseVersion.displayVersion).zip"
         New-PackageArchive $stageRoot (Join-Path $temporaryRoot $archiveName) $notice
         $archiveNames += $archiveName
     }

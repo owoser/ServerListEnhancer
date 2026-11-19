@@ -4,5 +4,9 @@
     "version": "${modVersion}",
     "author": "OWOSER Dev",
     "type": "native",
-    "platform": "${modPlatform}"
+    "platform": "${modPlatform}",
+    "extraInfo": {
+        "displayVersion": "${modDisplayVersion}",
+        "buildLeviLaminaVersion": "${modBuildLoaderVersion}"
+    }
 }

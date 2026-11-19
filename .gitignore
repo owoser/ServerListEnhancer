@@ -4,6 +4,7 @@ bin/
 dist/
 .xmake/
 .xmake-repo/
+.lip/
 *.log
 
 # 误创建的目录（历史遗留，不纳入版本库）

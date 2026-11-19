@@ -20,11 +20,19 @@ Windows 版适用 Windows x64、Minecraft Bedrock 1.26.60.05。客户端最低�
 
 ## 安装与升级
 
-- 客户端：退出游戏，把客户端包内的 ServerListEnhancer 目录放到客户端 mods 目录。
-- 服务端：停止服务器，把服务端包内同名目录放到 mods；兼容现有 plugins 目录映射。
-- **升级只替换程序和说明，保留原有服务器列表、配置和缓存；不要删除整个模组目录。**
+- Windows 服务端正式包可在已停服的目标工作区运行 `lip install github.com/owoser/ServerListEnhancer` 安装；lip 需 0.41 或更新版本，本版包绑定已验证的 LeviLamina 26.60.8。
+- Windows 客户端使用 LeviLauncher 消费客户端条目；lip CLI 只管理服务端工作区。
+- 手动安装客户端：退出游戏，把客户端 ZIP 内的 ServerListEnhancer 目录放到客户端 mods 目录。手动安装服务端：停止服务器，把服务端 ZIP 内同名目录放到 mods；兼容现有 plugins 目录映射。
+- Android 使用 Android 版 LeviLauncher 导入 `.levipack`，不使用 Windows ZIP 或 DLL，当前不由本仓 lip 条目安装。
+- **升级只替换程序和说明，保留原有服务器列表、配置和缓存；不要删除整个模组目录。** lip 条目同样保留 `mods/ServerListEnhancer/config/`、`servers.json` 与 `cache/`。
 - Windows 客户端运行时会在加载初始化前拒绝 LL 26.60.8 以下版本；只替换 LL DLL 而未更新配套符号数据时，连接接口检查会提示完整升级。无需 DearOreUI。
 - 配置支持 /sle reload。服务端 DLL 固定到进程生命周期，不支持热卸载或运行中替换；更新 DLL 必须重启。
+
+## 版本与发布
+
+版本以 [version.json](<version.json>) 为唯一事实源。显示版本 **26.60.8.1** 对应兼容包版本 **26.60.8001**：GitHub Release 标题和下载包名使用前者，[lip.toml](<lip.toml>) 与各端加载器清单使用后者，Git 标签为 `v26.60.8001`。转换规则为 `包末段 = LL补丁版本 × 1000 + 自有发行序号`，自有发行序号从 1 开始、上限 999，避免四段显示号被 lip 的 SemVer 解析器拒绝。
+
+普通修复和推送代码不会自动改版本或发版；只有用户明确要求发布该版时才更新版本、创建标签和 Release。[发布准备脚本](<scripts/build-release.ps1>) 只构建和校验，不执行发布。完整的构建、草稿、资产哈希和隔离安装验证步骤见 [发布流程](<docs/releasing.md>)。
 
 ## 配置与发现协议
 
