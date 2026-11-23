@@ -1,6 +1,6 @@
 format = 4
 id = "github.com/owoser/ServerListEnhancer"
-version = "26.60.8002"
+version = "26.60.8003"
 
 [info]
 name = "ServerListEnhancer"
@@ -34,6 +34,5 @@ preserve = ["mods/ServerListEnhancer/config/", "mods/ServerListEnhancer/servers.
 "github.com/LiteLDev/LeviLamina" = "26.60.8"
 
 [[variants."".assets]]
-type = "zip"
-urls = ["https://{{id}}/releases/download/v{{version}}/ServerListEnhancer-client-v{{version}}.zip"]
-place = [{ src = "ServerListEnhancer/", dest = "mods/ServerListEnhancer/" }]
+type = "mcmod"
+urls = ["https://{{id}}/releases/download/v{{version}}/ServerListEnhancer-client-v{{version}}.mcmod"]

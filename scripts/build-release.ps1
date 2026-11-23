@@ -31,7 +31,9 @@ foreach ($side in @('client', 'server')) {
     if ($entry.Count -ne 1 -or $entry[0].deps.'github.com/LiteLDev/LeviLamina' -ne $expectedDep) {
         throw "Missing or mismatched $side lip dependency"
     }
-    $expectedUrl = "https://github.com/owoser/ServerListEnhancer/releases/download/v$($release.version)/ServerListEnhancer-$side-v$($release.version).zip"
+    # The client is an LL mcmod archive; the server stays type=zip with a nested folder.
+    $extension = if ($side -eq 'client') { 'mcmod' } else { 'zip' }
+    $expectedUrl = "https://github.com/owoser/ServerListEnhancer/releases/download/v$($release.version)/ServerListEnhancer-$side-v$($release.version).$extension"
     if ($entry[0].assets[0].urls[0] -ne $expectedUrl) { throw "Unexpected $side asset URL" }
 }
 Write-Host "Release metadata validated: $($release.version), LL $($release.leviLaminaVersion)"
@@ -69,7 +71,7 @@ try {
     }
 } finally { $archive.Dispose() }
 $artifacts = @(
-    "ServerListEnhancer-client-v$($release.version).zip",
+    "ServerListEnhancer-client-v$($release.version).mcmod",
     "ServerListEnhancer-server-v$($release.version).zip",
     "android/$androidName"
 )

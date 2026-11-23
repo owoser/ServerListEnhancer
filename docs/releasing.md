@@ -8,19 +8,19 @@
 
 | 字段 | 含义 | 本次示例 |
 | --- | --- | --- |
-| `version` | 全平台唯一三段版本号，同时用于 lip、加载器清单、标签、Release 标题和包名 | `26.60.8002` |
+| `version` | 全平台唯一三段版本号，同时用于 lip、加载器清单、标签、Release 标题和包名 | `26.60.8003` |
 | `leviLaminaVersion` | Windows 已验证的 LL 构建版本 | `26.60.8` |
-| `revision` | 对应 LL 版本下的自有发行序号，从 1 开始，范围 1..999 | `1` |
+| `revision` | 对应 LL 版本下的自有发行序号，从 1 开始，范围 1..999 | `3` |
 
-设 LL 版本为 `a.b.c`，自有序号为 `r`，则版本号为 `a.b.(c×1000+r)`；本轮 `26.60.8` + `1` → `26.60.8002`。LL 版本变更时序号从 `1` 重新开始；序号达到 999 后不得自行溢出，需要重新确认版本方案。lip 0.41.1 实测拒绝四段 SemVer，`26.60.8.1` 这类四段号禁止出现在 `lip.toml`、加载器清单或标签里。
+设 LL 版本为 `a.b.c`，自有序号为 `r`，则版本号为 `a.b.(c×1000+r)`；本轮 `26.60.8` + `3` → `26.60.8003`。LL 版本变更时序号从 `1` 重新开始；序号达到 999 后不得自行溢出，需要重新确认版本方案。lip 0.41.1 实测拒绝四段 SemVer，`26.60.8.1` 这类四段号禁止出现在 `lip.toml`、加载器清单或标签里。
 
 以下身份全部使用同一个版本号，必须一致：
 
-- [lip.toml](<../lip.toml>) 的 `version`、Windows 与 Android 模组加载器的 `manifest.version` 均为 `26.60.8002`。
-- Git 版本标签为 `v<version>`，本次为 **`v26.60.8002`**。标签所指提交中的 lip 版本必须与标签严格一致，否则 lip 会跳过该标签。
-- GitHub Release 标题为版本号 **`26.60.8002`**。
-- Windows 下载包名为 `ServerListEnhancer-client-v26.60.8002.zip` 和 `ServerListEnhancer-server-v26.60.8002.zip`；Android 下载包名为 `ServerListEnhancer-26.60.8002-arm64-v8a.levipack`。
-- 下载 URL 的标签段与资产文件名使用同一个版本号，例如 `releases/download/v26.60.8002/ServerListEnhancer-server-v26.60.8002.zip`。
+- [lip.toml](<../lip.toml>) 的 `version`、Windows 与 Android 模组加载器的 `manifest.version` 均为 `26.60.8003`。
+- Git 版本标签为 `v<version>`，本次为 **`v26.60.8003`**。标签所指提交中的 lip 版本必须与标签严格一致，否则 lip 会跳过该标签。
+- GitHub Release 标题为版本号 **`26.60.8003`**。
+- Windows 下载包名为 `ServerListEnhancer-client-v26.60.8003.mcmod` 和 `ServerListEnhancer-server-v26.60.8003.zip`；Android 下载包名为 `ServerListEnhancer-26.60.8003-arm64-v8a.levipack`。
+- 下载 URL 的标签段与资产文件名使用同一个版本号，例如 `releases/download/v26.60.8003/ServerListEnhancer-server-v26.60.8003.zip`。
 
 LL 最低运行门禁、lip 依赖、构建 SDK 与游戏 ABI 是不同检查项。Windows 客户端的 lip 依赖精确绑定 LL `26.60.8`；服务端为 `>=26.60.2`，因为服务端没有运行期版本门禁，且同一份源码在 26.60.2 SDK 下也能编译链接。最低门禁通过不证明未来 LL/游戏版本已验证。Android 使用独立的 Preloader SDK，继续遵守 [Android 构建说明](<android.md>) 的启动器、NDK 与游戏版本约束。
 
@@ -28,7 +28,7 @@ LL 最低运行门禁、lip 依赖、构建 SDK 与游戏 ABI 是不同检查项
 
 包 ID 固定为 `github.com/owoser/ServerListEnhancer`。清单采用 format 4；默认变体 `""` 包含两个 Windows 条目，分别是 `(side=server, platform=win-x64)` 与 `(side=client, platform=win-x64)`。
 
-Windows ZIP 根部包含 `ServerListEnhancer/`，因此清单使用 `type="zip"`，以 `{ src="ServerListEnhancer/", dest="mods/ServerListEnhancer/" }` 放置。不要改成要求 ZIP 根部直接有模组清单的 `mcmod` 资源类型。`preserve` 按工作区相对路径匹配，必须保留：
+Windows 客户端采用 LL 的 `mcmod` 资源类型：归档根部直接放 `manifest.json`、`ServerListEnhancer.dll` 与 `.pdb`，清单写 `type="mcmod"` 且不给 `place`，lip 会把整个归档装到 `mods/ServerListEnhancer/`（目录名取 `manifest.json` 的 `name`）。服务端保持 `type="zip"`，ZIP 根部包含 `ServerListEnhancer/`，用 `{ src="ServerListEnhancer/", dest="mods/ServerListEnhancer/" }` 放置。两种形状不可互换。`preserve` 按工作区相对路径匹配，必须保留：
 
 ```text
 mods/ServerListEnhancer/config/
@@ -58,7 +58,7 @@ lip CLI 仅管理服务端工作区，安装命令为 `lip install github.com/ow
 
    脚本只读取版本、构建和校验，不改版本、不建标签、不 push、不创建或发布 Release。Windows 必须串行构建 client/server；每端产物先从 `bin/ServerListEnhancer` 保存到各自暂存目录，再切下一端，不能并发切 xmake 配置。两端共用 `sle.modpacker`，不能依靠遗留暂存 DLL 冒充本次构建。Android 随后执行独立打包和主机 CTest、DEX、ARM64 ELF/依赖检查。
 4. 按本轮改动运行必要回归，记录实际结果。中文输入要切到中文模式，走拼音、候选选词和提交；英语布局下的主机字符测试不能代替 IME 验证。需联网或启动游戏时只用已授权的开发环境，不把生产服或玩家资料用作测试。
-5. 打开每个最终归档核对清单：`version=<version>`，Windows `platform` 与 client/server 相符，构建 LL 版本与 `leviLaminaVersion` 相符；依赖与已验证范围一致。确认 ZIP 内目录形状匹配 `place`、Android 包内包含原生库及 DEX、第三方说明齐备；不得混入用户列表、缓存或本机配置。
+5. 打开每个最终归档核对清单：`version=<version>`，Windows `platform` 与 client/server 相符，构建 LL 版本与 `leviLaminaVersion` 相符；依赖与已验证范围一致。确认服务端 ZIP 的目录形状匹配 `place`、客户端 `.mcmod` 根部直接是 `manifest.json` 与 DLL、Android 包内包含原生库及 DEX、第三方说明齐备；不得混入用户列表、缓存或本机配置。
 6. 检查 [dist](<../dist/>) 中三类正式包及 `SHA256SUMS.txt`。摘要中的三个文件名和 SHA256 必须对应本次最终产物，不使用旧版本文件或构建前摘要。
 7. 所有受管理源码、脚本和文档达到最终稳定状态后，由集成 lead 按当前 AOCI Guide 完成普通维护，处理全部批次与停点，再依次证明对齐：
 
@@ -88,7 +88,7 @@ gh release create $tag --repo owoser/ServerListEnhancer --draft --target $commit
 草稿创建成功后，上传三个正式包与本地摘要：
 
 ```powershell
-gh release upload $tag --repo owoser/ServerListEnhancer "dist/ServerListEnhancer-client-v$($release.version).zip" "dist/ServerListEnhancer-server-v$($release.version).zip" "dist/android/ServerListEnhancer-$($release.version)-arm64-v8a.levipack" dist/SHA256SUMS.txt
+gh release upload $tag --repo owoser/ServerListEnhancer "dist/ServerListEnhancer-client-v$($release.version).mcmod" "dist/ServerListEnhancer-server-v$($release.version).zip" "dist/android/ServerListEnhancer-$($release.version)-arm64-v8a.levipack" dist/SHA256SUMS.txt
 ```
 
 每条命令非零退出或结果未知时先查看该草稿及其资产，不盲目重试，不继续公开。通过已登录账号把草稿资产下载到本次新建的 [build](<../build/>) 隔离目录；核对资产数目、文件名、大小和每个包的 SHA256，下载的摘要文件也须与本地最终摘要一致：
@@ -108,7 +108,7 @@ gh release edit $tag --repo owoser/ServerListEnhancer --draft=false
 lip pkg view github.com/owoser/ServerListEnhancer
 ```
 
-确认远端可发现 `26.60.8002` 等目标包版本，且其清单和展开后的下载 URL 指向目标 tag 与资产；不能只凭 GitHub Release 存在就声称 lip 可安装。
+确认远端可发现 `26.60.8003` 等目标包版本，且其清单和展开后的下载 URL 指向目标 tag 与资产；不能只凭 GitHub Release 存在就声称 lip 可安装。
 
 安装验证只在本次新建的空隔离目录进行，目录放在仓库 [build](<../build/>) 下并使用唯一名称。空目录还没有游戏，而本包会连带安装 LeviLamina 26.60.8，lip 会拒绝并提示先准备服务端（`error: This workspace has no game yet ...`）；因此先在同一目录执行 `lip install github.com/LiteLDev/LeviLamina --accept-eula`。接受 Minecraft EULA 与隐私政策只能由维护者本人决定，agent 不得代为加 `--accept-eula`。随后运行 `lip install github.com/owoser/ServerListEnhancer` 和 `lip list`，确认安装版本、LL 依赖以及 `mods/ServerListEnhancer/` 中的 DLL/清单。可在隔离目录预置临时 `config/`、`servers.json`、`cache/` 哨兵文件并记录哈希，核对安装或更新后保持不变。不要复制真实服务器或玩家资料，不切换到真实游戏/服务器目录安装，也不为测试而删除其模组目录。
 

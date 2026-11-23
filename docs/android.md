@@ -53,7 +53,7 @@ Preloader SDK 锁定 LeviLauncher Android v1.6.0 实际绑定的提交 5d108da35
 
 ## 安装与验证
 
-1. 将 dist/android/ServerListEnhancer-26.60.8002-arm64-v8a.levipack 传到手机下载目录。
+1. 将 dist/android/ServerListEnhancer-26.60.8003-arm64-v8a.levipack 传到手机下载目录。
 2. 在 LeviLauncher Android 当前 Minecraft 实例的“模组”页面添加该文件，启用模组。
 3. 清单声明 Minecraft 1.26.60 与 1.26.62 系列；在匹配实例启动后，从 Mod Menu 检查模块，返回游戏首页检查“社交”左侧的“服务器”按钮。打开列表、进入设置/游戏列表或世界内时入口应消失。
 4. 使用 adb logcat -s ServerListEnhancer 查看加载日志；添加一条测试服务器并重启检查列表保留。
@@ -61,7 +61,7 @@ Preloader SDK 锁定 LeviLauncher Android v1.6.0 实际绑定的提交 5d108da35
 开发调试使用启动器的 ADB 导入入口，无需打开文件管理器。先退出游戏，再执行：
 
 ~~~powershell
-adb -s <serial> push dist/android/ServerListEnhancer-26.60.8002-arm64-v8a.levipack /sdcard/Download/sle-android-test.zip
+adb -s <serial> push dist/android/ServerListEnhancer-26.60.8003-arm64-v8a.levipack /sdcard/Download/sle-android-test.zip
 adb -s <serial> shell am start -W -n org.levimc.launcher/.ui.activities.IntentHandler -a android.intent.action.VIEW -d 'content://com.android.externalstorage.documents/document/primary%3ADownload%2Fsle-android-test.zip' -t application/zip
 ~~~
 

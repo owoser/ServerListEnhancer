@@ -8,6 +8,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <imm.h>
 
 #include "ClientEntry.h"
 #include "ServerStatus.h"
@@ -17,6 +18,11 @@
 #include "AddressParser.h"
 #include "TextEdit.h"
 #include "NativeTextInput.h"
+#include "ll/api/memory/Hook.h"
+#include "mc/client/gui/screens/UIScene.h"
+#include "mc/client/input/KeyboardManager.h"
+#include "mc/deps/core/math/Vec2.h"
+#include "mc/deps/input/enums/FocusImpact.h"
 #include "LatencyProbe.h"
 #include "common/UdpProbeProtocol.h"
 #include "ServerStore.h"
@@ -131,10 +137,36 @@ bool                    gFormEditing{false};
 std::array<TextEdit,2> gEditors;
 std::uint64_t gTextSession{};
 std::atomic<HWND> gGameWindow{};
+// Primary path: the game's own text input (KeyboardManager) delivers UTF-8 to
+// UIScene::$handleTextChar, so no second window has to take the foreground.
+std::atomic<bool> gGameTextActive{};
+void* gTextCharScene{}; // 只接受第一次投递文本的 UIScene 实例，其他实例的重复投递忽略
+bool  gGameTextReleasePending{};
+
+int   gGameTextField{-1};
+float gGameTextCaretX{};
+float gGameTextCaretY{};
+// 游戏会把组字结果按“整段状态”重发（有时带 0x08 退格、有时不带），事件先按
+// 按键分组，落盘时按“替换上一组”处理，避免同一个字母被反复追加。
+std::string gGroupBytes;
+int gGroupField{-1};
+std::chrono::steady_clock::time_point gGroupAt{};
+std::string gPrevGroupText;
+std::size_t gPrevGroupChars{};
+int gPrevGroupField{-1};
+int gFlushLogs{};
+// TSF 输入法（微软拼音）不经 IMM 暴露组字，只能用 Esc 让游戏侧输入框自己取消。
+std::atomic<bool> gImeCancelKey{};
+std::chrono::steady_clock::time_point gImeCancelAt{};
+// 切换输入框时游戏会把上一轮未上屏的组字回放进新框，按前缀整段吞掉。
+std::string gCarryOverText;
+int gCarryOverField{-1};
+std::chrono::steady_clock::time_point gCarryOverAt{};
+
 int gNativeField{-1};
 int gNativeLastField{-1};
 RECT gNativeLastBox{};
-std::atomic<int> gPendingNativeField{-1};
+std::atomic<int> gPendingTextField{-1};
 std::string gNativePreview;
 int         gNativePreviewField{-1};
 int         gNativePreviewCaret{};
@@ -425,6 +457,241 @@ RECT nativeFieldBox(Rect const& box) {
             origin.y + LONG(std::lround(box.y1 * gGuiScale))};
 }
 
+// ------------------------------------------------------------------
+// 游戏原生文本输入（首选）：游戏的 KeyboardManager 接管输入法，UTF-8 文本经
+// UIScene::$handleTextChar 直接落到当前字段。不再开第二个窗口抢前台，
+// 鼠标指针与“点空白后再点回来”的中文输入都保持正常。
+// ------------------------------------------------------------------
+KeyboardManager* keyboardManager() {
+    auto ci = ll::service::bedrock::getClientInstance();
+    return ci ? &ci->getKeyboardManager() : nullptr;
+}
+
+// 输入法组字未结束时的 Enter/Esc/退格属于候选词操作，绝不能当成表单快捷键。
+bool imeComposing() {
+    HWND hwnd = gGameWindow;
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    HIMC himc = ImmGetContext(hwnd);
+    if (!himc) return false;
+    LONG const len = ImmGetCompositionStringW(himc, GCS_COMPSTR, nullptr, 0);
+    ImmReleaseContext(hwnd, himc);
+    return len > 0;
+}
+
+std::size_t utf8Chars(std::string const& s) {
+    std::size_t n = 0;
+    for (unsigned char c : s) if ((c & 0xC0) != 0x80) ++n;
+    return n;
+}
+bool allAscii(std::string const& s) {
+    for (unsigned char c : s) if (c >= 0x80) return false;
+    return true;
+}
+
+// 一组事件 = 同一次按键期间游戏发出的若干段文本。组内 0x08 是回退，其余是文本。
+// 组与组之间：新组以前一组为前缀 → 组字回放，删掉上一组再写入；新组是中文而
+// 上一组是拼音 → 上屏，同样替换；否则按普通输入追加。
+// IME 会在音节之间插入撇号（a'x），重放时位置还会变；比较前统一剥掉。
+std::string stripApostrophes(std::string const& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        auto const c = static_cast<unsigned char>(s[i]);
+        if (c == 0x27) { ++i; continue; }
+        if (c == 0xE2 && i + 2 < s.size()
+            && static_cast<unsigned char>(s[i + 1]) == 0x80
+            && static_cast<unsigned char>(s[i + 2]) == 0x99) { i += 3; continue; }
+        out += static_cast<char>(c);
+        ++i;
+    }
+    return out;
+}
+
+void flushGameGroup() {
+    if (gGroupBytes.empty()) { gGroupField = -1; return; }
+    int const field = gGroupField;
+    std::string const bytes = std::move(gGroupBytes);
+    gGroupBytes.clear();
+    gGroupField = -1;
+    if (field < 0 || field > 1) return;
+    auto& value = field == 0 ? gDraft.address : gDraft.name;
+    auto& edit  = gEditors[field];
+    edit.clamp(value);
+    std::size_t const limit = field == 0 ? 255 : 128;
+    std::size_t backspaces = 0;
+    std::string text;
+    for (std::size_t i = 0; i < bytes.size();) {
+        auto const c = static_cast<unsigned char>(bytes[i]);
+        if (c == 0x08) { ++backspaces; ++i; continue; }
+        if (c < 0x20 || c == 0x7F) { ++i; continue; }
+        std::size_t len = 1;
+        if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        if (i + len > bytes.size()) len = bytes.size() - i;
+        text.append(bytes, i, len);
+        i += len;
+    }
+    std::string const norm = stripApostrophes(text);
+    if (gCarryOverField >= 0 && field != gCarryOverField && !norm.empty() && !gCarryOverText.empty()
+        && std::chrono::steady_clock::now() - gCarryOverAt < std::chrono::milliseconds(1500)
+        && norm.size() >= gCarryOverText.size()
+        && norm.compare(0, gCarryOverText.size(), gCarryOverText) == 0) {
+        // 切换输入框时游戏会把上一轮未上屏的组字回放进新框，整段吞掉。
+        gCarryOverText = norm;
+        gCarryOverAt = std::chrono::steady_clock::now();
+        return;
+    }
+    // 上一组的完整重放：整组丢弃，不再追加一次。
+    if (gPrevGroupField == field && !norm.empty() && backspaces == 0 && norm == gPrevGroupText) {
+        if (debugLogging() && ++gFlushLogs <= 60) probeLogger().info("[IME] duplicate replay skipped '{}'", text);
+        return;
+    }
+    bool const sameField = (gPrevGroupField == field);
+    bool const extends = sameField && !norm.empty() && !gPrevGroupText.empty()
+        && norm.size() > gPrevGroupText.size()
+        && norm.compare(0, gPrevGroupText.size(), gPrevGroupText) == 0;
+    bool const commit = sameField && !norm.empty() && !gPrevGroupText.empty()
+        && backspaces == 0 && allAscii(gPrevGroupText) && !allAscii(norm)
+        && gPrevGroupChars > 0 && gPrevGroupChars <= 12;
+    std::size_t const rawChars = utf8Chars(text);
+    std::size_t del = backspaces;
+    if (extends || commit) del = std::max(del, gPrevGroupChars);
+    for (std::size_t i = 0; i < del; ++i) edit.backspace(value);
+    if (!text.empty()) edit.insert(value, text, limit);
+    if (debugLogging() && ++gFlushLogs <= 40)
+        probeLogger().info("[IME] group bs={} del={} prev='{}' norm='{}' text='{}'", backspaces, del, gPrevGroupText, norm, text);
+    gPrevGroupField = field;
+    gPrevGroupText = norm;
+    gPrevGroupChars = rawChars;
+    if (del || !text.empty()) { gCaretAt = Clock::now(); gFormError.clear(); }
+}
+
+// IME 上下文不在游戏主窗口上：遍历本进程窗口，找到真正持有 composition 的那个。
+// 切换输入框/结束编辑前取消未上屏的组字，否则候选框会停在旧位置，
+// 拼音也会被游戏回放进新输入框。微软拼音等 TSF 输入法不经 IMM 暴露组字，
+// 只能把 Esc 送给游戏窗口，让持有组字的输入框自己取消。
+void cancelImeComposition(char const* why) {
+    if (!gGameWindow || !IsWindow(gGameWindow)) return;
+    gImeCancelKey = true;
+    gImeCancelAt = std::chrono::steady_clock::now();
+    PostMessageW(gGameWindow, WM_KEYDOWN, VK_ESCAPE, 0);
+    PostMessageW(gGameWindow, WM_KEYUP, VK_ESCAPE, 0);
+    if (debugLogging()) probeLogger().info("[IME] composition cancel via Esc ({})", why);
+}
+
+void endGameText() {
+    if (!gGameTextActive) return;
+    cancelImeComposition("end");
+    if (!gGroupBytes.empty()) flushGameGroup();
+    gGameTextActive = false;
+    gTextCharScene = nullptr;
+    gGameTextField = -1;
+    // 键盘事件的线程不保证是主线程，释放推迟到渲染帧执行。
+    gGameTextReleasePending = true;
+}
+
+void serviceGameTextRelease() {
+    if (!gGameTextReleasePending) return;
+    gGameTextReleasePending = false;
+    if (auto* km = keyboardManager()) {
+        km->disableKeyboard();
+        km->releaseKeyboardOwnership();
+    }
+}
+
+bool beginGameText(int field, float controlHeight) {
+    if (field < 0 || field >= int(gFields.size())) return false;
+    // 切换输入框前必须先关掉上一个会话的键盘。游戏每 tryEnableKeyboard 一次
+    // 就建一个文本编辑框；两个同时存在时每个字符被投递两遍——这正是“第一个
+    // 框没事、点到第二个框就开始重复”的原因。
+    if (gGameTextActive) {
+        cancelImeComposition("switch");
+        if (!gGroupBytes.empty()) flushGameGroup();
+        gCarryOverText = gPrevGroupText;
+        gCarryOverField = gGameTextField;
+        gCarryOverAt = std::chrono::steady_clock::now();
+        gGameTextActive = false;
+        gGameTextField = -1;
+        gGameTextReleasePending = true;
+    }
+    // 新会话不继承上一组的“替换”基准，避免把旧拼音当成组字回放。
+    gGroupBytes.clear();
+    gGroupField = -1;
+    gPrevGroupText.clear();
+    gPrevGroupChars = 0;
+    gPrevGroupField = -1;
+    serviceGameTextRelease();
+    auto* km = keyboardManager();
+    if (!km) return false;
+    km->tryClaimKeyboardOwnership();
+    // 与 Lamium 一致传空串：把当前文本灌进游戏自己的编辑缓冲会在组字改写时
+    // 被整段回送（Lamium 的注释："seeding its independent edit buffer with our
+    // current value leaves stale suffixes"），表现为每个字母重复插入。
+    if (!km->tryEnableKeyboard(
+            {}, field == 0 ? 255 : 128, true, false, false,
+            Vec2{gGameTextCaretX, gGameTextCaretY}, controlHeight
+        )) {
+        km->releaseKeyboardOwnership();
+        probeLogger().warn("[IME] game text input refused field={}; falling back to native EDIT", field);
+        return false;
+    }
+    gGameTextActive = true;
+    gTextCharScene = nullptr;
+    gGameTextField = field;
+    gFormActive = field;
+    gCaretAt = Clock::now();
+    // 与 Lamium 相同：位置只在激活时交给游戏，之后不再逐帧重设文本框。
+    // 逐帧 updateTextEditBoxPosition 会让输入法候选窗跑出窗口（系统的候选框
+    // 位置来自这次激活时建立的文本框，重设会把它推到默认位置）。
+    if (debugLogging()) {
+        probeLogger().info(
+            "[IME] game text input enabled field={} caret=({}, {}) height={} scale={}",
+            field, gGameTextCaretX, gGameTextCaretY, controlHeight, gGuiScale
+        );
+    }
+    return true;
+}
+
+// 输入法组字改写会先发 0x08 再发新文本；其他控制字符一律丢弃。
+bool applyGameText(std::string const& inputUtf8, void* scene, int impact) {
+    if (!gGameTextActive || gGameTextField < 0 || gGameTextField > 1) return false;
+    auto& value = gGameTextField == 0 ? gDraft.address : gDraft.name;
+    auto& edit  = gEditors[gGameTextField];
+    edit.clamp(value);
+    std::size_t const limit = gGameTextField == 0 ? 255 : 128;
+    (void)limit;
+    // 事件先按按键分组，由 flushGameGroup 统一落盘：组字回放是“整段替换”，
+    // 逐条追加会把同一个字母叠成 "ss'ss's"。
+    if (gGroupField >= 0 && gGroupField != gGameTextField) flushGameGroup();
+    gGroupField = gGameTextField;
+    gGroupBytes += inputUtf8;
+    gGroupAt = std::chrono::steady_clock::now();
+    (void)scene;
+    (void)impact;
+    gCaretAt = Clock::now();
+    return true;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TextCharHook, ll::memory::HookPriority::Normal, UIScene, &UIScene::$handleTextChar,
+    void, std::string const& inputUtf8, FocusImpact focusImpact
+) {
+    bool consumed = false;
+    {
+        std::lock_guard lock(gMutex);
+        if (gOpen && gPage == Page::Form) {
+            void* scene = static_cast<void*>(this);
+            if (!gTextCharScene) gTextCharScene = scene;
+            // 同一段文本会被多个 UIScene 实例重复投递（日志里同一毫秒内的重复
+            // 字符），只认第一个实例，其余直接吞掉，不再二次插入。
+            consumed = (scene != gTextCharScene) || applyGameText(inputUtf8, scene, int(focusImpact));
+        }
+    }
+    if (!consumed) origin(inputUtf8, focusImpact);
+}
+std::unique_ptr<ll::memory::HookRegistrar<TextCharHook>> gTextCharHook;
+
 // Call with gMutex held. All game drafts stay on the overlay side of the bridge.
 void activateNativeField(int field, int fontPixelHeight, int textInset) {
     if (!gGameWindow || !IsWindow(gGameWindow) || field < 0 || field >= int(gFields.size())) return;
@@ -440,6 +707,12 @@ void activateNativeField(int field, int fontPixelHeight, int textInset) {
     } else {
         gFormError = "系统输入框未能启动，可使用 Ctrl+V 粘贴";
     }
+}
+
+// 首选游戏原生输入；游戏拒绝时才回退到独立 EDIT 窗口。
+void activateTextField(int field, int fontPixelHeight, int textInset, float controlHeight) {
+    if (beginGameText(field, controlHeight)) return;
+    activateNativeField(field, fontPixelHeight, textInset);
 }
 
 // 原生编辑期间的实时文本（含组字）只做显示预览，绝不写进 gDraft。
@@ -478,7 +751,7 @@ void applyNativeTextResults() {
         gCaretAt = Clock::now();
         gNativeField = -1;
         gNativeLastField = -1;
-        if (result->action == NativeTextAction::Tab) gPendingNativeField = (result->field + 1) % 2;
+        if (result->action == NativeTextAction::Tab) gPendingTextField = (result->field + 1) % 2;
     }
 }
 
@@ -520,16 +793,18 @@ void drawFormPage(MinecraftUIRenderContext& ctx,Font& font,float sw,float sh,flo
   if(gFormActive==int(i)&&b>a){float x0=box.x0+9+textWidth(font,std::string_view(value).substr(edit.view,a-edit.view)),x1=box.x0+9+textWidth(font,std::string_view(value).substr(edit.view,b-edit.view));fillRect(ctx,{x0,ty-1,x1,ty+font.getWrapHeight()+1},color8(70,113,142),1);}
   if(value.empty())drawText(ctx,font,{box.x0+9,ty,box.x1-9,box.y1},i==0?"例如 play.example.com:19132":"可选，留空使用服务器名称",color8(168,168,168),1);
   else drawText(ctx,font,{box.x0+9,ty,box.x1-9,box.y1},tail,color8(255,255,255),1);
-  if(gFormActive==int(i)&&(gInputForeground||nativeTextInputActive())&&std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-gCaretAt).count()%1000<500){float x=box.x0+9+textWidth(font,std::string_view(value).substr(edit.view,edit.caret-edit.view));fillRect(ctx,{x,ty-1,x+1,ty+font.getWrapHeight()+1},color8(255,255,255),1);}
+  float const caretX=box.x0+9+textWidth(font,std::string_view(value).substr(edit.view,edit.caret-edit.view));
+  if(gFormActive==int(i)){gGameTextCaretX=caretX;gGameTextCaretY=ty;}
+  if(gFormActive==int(i)&&(gInputForeground||nativeTextInputActive()||gGameTextActive)&&std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-gCaretAt).count()%1000<500){fillRect(ctx,{caretX,ty-1,caretX+1,ty+font.getWrapHeight()+1},color8(255,255,255),1);}
   if(previewing)gNativePreviewView=edit.view;
  }
- if (gPendingNativeField >= 0 && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+ if (gPendingTextField >= 0 && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)
      && !(GetAsyncKeyState(VK_TAB) & 0x8000) && !(GetAsyncKeyState(VK_RETURN) & 0x8000)
      && !(GetAsyncKeyState(VK_ESCAPE) & 0x8000)) {
-     int const field = gPendingNativeField;
-     gPendingNativeField = -1;
-     activateNativeField(field, static_cast<int>(std::lround(font.getWrapHeight() * gGuiScale)),
-                         static_cast<int>(std::lround(9.0f * gGuiScale)));
+     int const field = gPendingTextField;
+     gPendingTextField = -1;
+     activateTextField(field, static_cast<int>(std::lround(font.getWrapHeight() * gGuiScale)),
+                       static_cast<int>(std::lround(9.0f * gGuiScale)), font.getWrapHeight());
  }
  drawText(ctx,font,{panel.x0+16,panel.y1-96,panel.x1-16,panel.y1-76},gFormError.empty()?"点击输入框使用中文输入法 · Enter 结束编辑":gFormError,gFormError.empty()?color8(222,222,222):color8(255,154,140),1);
  float by=panel.y1-43;
@@ -632,19 +907,21 @@ void pollKeyboard(){
  std::array<bool,256> down{},edge{};
  for(int i=0;i<256;++i){down[i]=(GetAsyncKeyState(i)&0x8000)!=0;edge[i]=down[i]&&!gKeyPrev[i];}gKeyPrev=down;
  bool resumed=foreground&&!gInputForeground;gInputForeground=foreground;
- if (nativeTextInputActive() || gPendingNativeField >= 0) { gNativeKeyRelease = true; return; }
+ if (nativeTextInputActive() || gPendingTextField >= 0) { gNativeKeyRelease = true; return; }
  if (gNativeKeyRelease) {
    if (!down[VK_RETURN] && !down[VK_ESCAPE] && !down[VK_TAB]) gNativeKeyRelease = false;
    return;
  }
  if(!foreground||resumed)return;
  std::lock_guard lock(gMutex);if(!gOpen)return;
+ if(gGameTextActive&&imeComposing()){gKeyRepeatAt={};return;}
  if(down[VK_MENU]||down[VK_LWIN]||down[VK_RWIN]){gKeyRepeatAt={};return;}
+ if(gGameTextActive&&edge[VK_ESCAPE]){endGameText();return;}
  if(edge[VK_ESCAPE]){gEscSuppressMs.store(steadyMs()+250);if(gPage==Page::List)gOpen=false;else gPage=Page::List;return;}
  if(gPage!=Page::Form)return;
  bool ctrl=down[VK_CONTROL],shift=down[VK_SHIFT];
- if(edge[VK_TAB]){gFormActive=(gFormActive+1)%2;gCaretAt=Clock::now();gPendingNativeField=gFormActive;return;}
- if(edge[VK_RETURN]&&!ctrl){saveDraft();return;}
+ if(edge[VK_TAB]){if(gGameTextActive)endGameText();gFormActive=(gFormActive+1)%2;gCaretAt=Clock::now();gPendingTextField=gFormActive;return;}
+ if(edge[VK_RETURN]&&!ctrl){if(gGameTextActive){endGameText();return;}saveDraft();return;}
  auto& edit=gEditors[gFormActive];auto& value=gFormActive==0?gDraft.address:gDraft.name;edit.clamp(value);
  if(ctrl){
   if(edge['A']){edit.anchor=0;edit.caret=value.size();}
@@ -661,10 +938,13 @@ void pollKeyboard(){
  if(edge[VK_END]){edit.caret=value.size();if(!shift)edit.anchor=edit.caret;changed=true;}
  if(edge[VK_BACK]){edit.backspace(value);changed=true;}
  if(edge[VK_DELETE]){edit.del(value);changed=true;}
- BYTE state[256]{};GetKeyboardState(state);
- for(int vk=32;vk<256;++vk){if(!edge[vk]||vk==VK_DELETE||vk==VK_LEFT||vk==VK_RIGHT||vk==VK_HOME||vk==VK_END)continue;
-  wchar_t chars[8]{};int count=ToUnicode(vk,MapVirtualKeyW(vk,MAPVK_VK_TO_VSC),state,chars,8,0);
-  if(count>0){char utf8[32]{};int n=WideCharToMultiByte(CP_UTF8,0,chars,count,utf8,32,nullptr,nullptr);if(n>0){edit.insert(value,std::string_view(utf8,n),gFormActive?128:255);changed=true;}}
+ // 游戏原生输入接管时，可打印字符由 handleTextChar 送达，这里只处理控制键，避免重复插入。
+ if(!gGameTextActive){
+  BYTE state[256]{};GetKeyboardState(state);
+  for(int vk=32;vk<256;++vk){if(!edge[vk]||vk==VK_DELETE||vk==VK_LEFT||vk==VK_RIGHT||vk==VK_HOME||vk==VK_END)continue;
+   wchar_t chars[8]{};int count=ToUnicode(vk,MapVirtualKeyW(vk,MAPVK_VK_TO_VSC),state,chars,8,0);
+   if(count>0){char utf8[32]{};int n=WideCharToMultiByte(CP_UTF8,0,chars,count,utf8,32,nullptr,nullptr);if(n>0){edit.insert(value,std::string_view(utf8,n),gFormActive?128:255);changed=true;}}
+  }
  }
  if(changed){gCaretAt=Clock::now();gFormError.clear();}
 }
@@ -674,14 +954,27 @@ bool queryCursorClient(int& outX, int& outY);
 void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
     auto& ctx = event.uiRenderContext();
     auto& view = event.screenView();
+    serviceGameTextRelease();
+    if (!gGroupBytes.empty()
+        && std::chrono::steady_clock::now() - gGroupAt > std::chrono::milliseconds(12))
+        flushGameGroup();
+    if (gImeCancelKey.load()
+        && std::chrono::steady_clock::now() - gImeCancelAt > std::chrono::milliseconds(300))
+        gImeCancelKey = false;
     // AfterUIRenderEvent fires for EACH ScreenView, not once per frame. Drawing
     // again on toast/debug was the source of duplicated dark overlay layers.
     if (view.getScreenName() != "start_screen") {
-        if(Clock::now()-gLastMenuFrame>std::chrono::milliseconds(250)){if(nativeTextInputActive())closeNativeTextInput();endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();}
+        if(Clock::now()-gLastMenuFrame>std::chrono::milliseconds(250)){if(gGameTextActive)endGameText();if(nativeTextInputActive())closeNativeTextInput();endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();}
         return;
     }
     auto ci = ll::service::bedrock::getClientInstance();
     if (!ci) { gVisible.store(false); return; }
+    if (gGameTextActive) {
+        if (auto* km = keyboardManager(); km && km->getKeyboardClosedEvent()) {
+            km->clearKeyboardClosedEvent();
+            endGameText();
+        }
+    }
     auto const size = view.mSize.get();
     float const sw = size.x, sh = size.y;
     auto const stack = ci->getCurrentSceneStack();
@@ -714,7 +1007,7 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
             gButtonValid=false; gPanelValid=false; gRows.clear();
         }
     }
-    if (!allowed) {if(nativeTextInputActive())closeNativeTextInput();endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();return;}
+    if (!allowed) {if(gGameTextActive)endGameText();if(nativeTextInputActive())closeNativeTextInput();endImageFrame(false);ImageProvider::getInstance().tick(false);LatencyProbe::getInstance().pause();return;}
     applyNativeTextPreviews();
     beginImageFrame();
     FontHandle handle = ci->getFontHandle();
@@ -748,7 +1041,7 @@ void drawProbe(ll::event::render::AfterUIRenderEvent& event) {
 
     applyNativeTextResults();
     pollKeyboard();
-    {std::lock_guard lock(gMutex);open=gOpen;page=gPage;if(!open||page!=Page::Form)gPendingNativeField=-1;}
+    {std::lock_guard lock(gMutex);open=gOpen;page=gPage;if(!open||page!=Page::Form){gPendingTextField=-1;if(gGameTextActive)endGameText();}}
 
     // 180ms 淡入淡出：按真实帧间隔推进，再用 smoothstep 让起止都不生硬。
     auto const nowTick = Clock::now();
@@ -816,7 +1109,7 @@ void startAddForm() {
     gFormId      = {};
     gFormActive  = 0;
     gFormEditing = false;
-    ++gTextSession; gNativeField = -1;
+    ++gTextSession; gNativeField = -1; endGameText();
     gFormError.clear();gEditors={};gCaretAt=Clock::now();
     rebuildFields();
     gPage = Page::Form;
@@ -909,6 +1202,13 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
             return;
         }
         commitNativeTextInput();
+    }
+    if (gGameTextActive) {
+        if (!haveCursor || int(event.actionButtonId()) != 1 || int(event.buttonData()) != 1) {
+            event.cancel();
+            return;
+        }
+        endGameText();
     }
     applyNativeTextResults();
 
@@ -1091,7 +1391,7 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
                 gFormId      = srv->id;
                 gFormActive  = 0;
                 gFormEditing = true;
-                ++gTextSession; gNativeField = -1;
+                ++gTextSession; gNativeField = -1; endGameText();
                 gPage        = Page::Form;
                 return;
             }
@@ -1134,12 +1434,17 @@ void onMouse(ll::event::input::MouseInputEvent& event) {
     for (std::size_t i = 0; i < fields.size(); ++i) {
         if (fields[i].rect.contains(uiX, uiY)) {
             std::lock_guard lock(gMutex);
+            // 切换到别的框前先结束旧会话：旧的游戏编辑框与未提交的组字否则会
+            // 残留下来，新会话一 enable 就把旧拼音回放进新框（同毫秒多字符）。
+            if (gGameTextActive && gGameTextField != static_cast<int>(i)) endGameText();
             gFormActive = static_cast<int>(i);
-            gPendingNativeField = gFormActive;
+            gPendingTextField = gFormActive;
             gCaretAt=Clock::now();
             return;
         }
     }
+    // 点击空白处同样结束编辑，避免会话被带到下一次点击。
+    { std::lock_guard lock(gMutex); if (gGameTextActive) endGameText(); }
     if(saveBtn.contains(uiX,uiY)){std::lock_guard lock(gMutex);saveDraft();return;}
     if (cancelBtn.contains(uiX, uiY)) {
         std::lock_guard lock(gMutex);
@@ -1167,7 +1472,7 @@ void registerProbeOverlay() {
     if (!gKeyListener) {
         gKeyListener = bus.emplaceListener<ll::event::input::KeyInputEvent>(
             [](ll::event::input::KeyInputEvent& event) {
-                if (nativeTextInputActive()) { event.cancel(); return; }
+                if (gImeCancelKey.load() || nativeTextInputActive() || gGameTextActive) { event.cancel(); return; }
                 if (!event.isDown() || event.keyCode() != VK_ESCAPE) return;
                 bool openNow = false;
                 {
@@ -1179,10 +1484,15 @@ void registerProbeOverlay() {
             }
         );
     }
-
+    if (!gTextCharHook) {
+        gTextCharHook = std::make_unique<ll::memory::HookRegistrar<TextCharHook>>();
+    }
 }
 
 void unregisterProbeOverlay() {
+    gTextCharHook.reset();
+    endGameText();
+    serviceGameTextRelease();
     shutdownNativeTextInput();
     {std::lock_guard lock(gMutex);gOpen=false;gVisible=false;gButtonValid=false;gPanelValid=false;gRows.clear();gJoinBtn={};gJoinQueued=false;gSelectedId.clear();}
     auto& bus = ll::event::EventBus::getInstance();

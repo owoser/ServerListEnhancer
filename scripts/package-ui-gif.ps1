@@ -73,8 +73,12 @@ try {
            $manifest.extraInfo.buildLeviLaminaVersion -ne $releaseVersion.leviLaminaVersion) {
             throw "Stale or mismatched $side manifest; rebuild using version.json before packaging"
         }
+        # The Windows client ships as an LL mcmod archive: its root must be the mod
+        # itself (manifest.json, DLL, PDB) because lip and LeviLauncher install the
+        # whole archive as mods/<manifest.name>/. The server keeps the nested folder
+        # consumed by the type=zip + place entry in lip.toml.
         $stageRoot = Join-Path $temporaryRoot $side
-        $stage = Join-Path $stageRoot 'ServerListEnhancer'
+        $stage = if ($side -eq 'client') { $stageRoot } else { Join-Path $stageRoot 'ServerListEnhancer' }
         New-Item -ItemType Directory -Force $stage | Out-Null
         foreach ($name in $artifactFiles) {
             Copy-Item -LiteralPath (Join-Path $source $name) -Destination $stage
@@ -83,7 +87,8 @@ try {
         if (Test-Path -LiteralPath $config -PathType Container) {
             Copy-Item -LiteralPath $config -Destination (Join-Path $stage 'config') -Recurse
         }
-        $archiveName = "ServerListEnhancer-$side-v$($releaseVersion.version).zip"
+        $extension = if ($side -eq 'client') { 'mcmod' } else { 'zip' }
+        $archiveName = "ServerListEnhancer-$side-v$($releaseVersion.version).$extension"
         New-PackageArchive $stageRoot (Join-Path $temporaryRoot $archiveName) $notice
         $archiveNames += $archiveName
     }
